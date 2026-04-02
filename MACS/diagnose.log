@@ -1,0 +1,265 @@
+(demo) pi@raspberrypi:~ $ python /home/pi/MACS/MACS/diagnose.py
+MACS 诊断脚本  —  2026-04-01 19:18:49
+Python: 3.9.23 | packaged by conda-forge | (main, Jun  4 2025, 17:50:54) 
+[GCC 13.3.0]
+
+============================================================
+  USB 设备列表 (lsusb)
+============================================================
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 001 Device 007: ID 2bdf:0101 HIK HikCamera
+Bus 001 Device 002: ID 2109:3431 VIA Labs, Inc. Hub
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+
+  [FOUND] TB4117 热像仪 (HikMicro)  →  bus 001 device 007: id 2bdf:0101 hik hikcamera
+  [MISS ] NYX650 / Cypress USB  (VID 04b4 未在 lsusb 中出现)
+  [MISS ] NYX650 (可能)  (VID 0525 未在 lsusb 中出现)
+
+============================================================
+  USB 带宽占用 (lsusb -v 摘要)
+============================================================
+/:  Bus 02.Port 1: Dev 1, Class=root_hub, Driver=xhci_hcd/4p, 5000M
+/:  Bus 01.Port 1: Dev 1, Class=root_hub, Driver=xhci_hcd/1p, 480M
+    |__ Port 1: Dev 2, If 0, Class=Hub, Driver=hub/4p, 480M
+        |__ Port 3: Dev 7, If 0, Class=Video, Driver=uvcvideo, 480M
+        |__ Port 3: Dev 7, If 1, Class=Video, Driver=uvcvideo, 480M
+
+============================================================
+  USB 控制器与速度
+============================================================
+bcdUSB               3.00
+  bDeviceClass            9 Hub
+  iProduct                2 xHCI Host Controller
+    MaxPower                0mA
+  bcdUSB               2.00
+  bDeviceClass          239 Miscellaneous Device
+  iProduct                2 HikCamera
+    MaxPower                2mA
+  bcdUSB               2.10
+  bDeviceClass            9 Hub
+  iProduct                1 USB2.0 Hub
+    MaxPower              100mA
+  bcdUSB               2.00
+  bDeviceClass            9 Hub
+  iProduct                2 xHCI Host Controller
+    MaxPower                0mA
+
+============================================================
+  V4L2 设备 (v4l2-ctl --list-devices)
+============================================================
+bcm2835-codec-decode (platform:bcm2835-codec):
+	/dev/video10
+	/dev/video11
+	/dev/video12
+	/dev/video18
+	/dev/video31
+
+bcm2835-isp (platform:bcm2835-isp):
+	/dev/video13
+	/dev/video14
+	/dev/video15
+	/dev/video16
+	/dev/video20
+	/dev/video21
+	/dev/video22
+	/dev/video23
+	/dev/media1
+	/dev/media2
+
+rpi-hevc-dec (platform:rpi-hevc-dec):
+	/dev/video19
+	/dev/media0
+
+HikCamera: UVC Camera (usb-0000:01:00.0-1.3):
+	/dev/video0
+	/dev/video1
+	/dev/media4
+
+bcm2835-codec (vchiq:bcm2835-codec):
+	/dev/media3
+
+============================================================
+  内核 UVC 模块状态
+============================================================
+  [OK] uvcvideo 已加载:
+  uvcvideo              110592  2
+uvc                    12288  1 uvcvideo
+videobuf2_vmalloc      12288  2 uvcvideo,bcm2835_v4l2
+videobuf2_v4l2         32768  6 bcm2835_codec,rpi_hevc_dec,uvcvideo,bcm2835_v4l2,v4l2_mem2mem,bcm2835_isp
+videodev              311296  7 bcm2835_codec,rpi_hevc_dec,videobuf2_v4l2,uvcvideo,bcm2835_v4l2,v4l2_mem2mem,bcm2835_isp
+videobuf2_common       73728  10 bcm2835_codec,videobuf2_vmalloc,rpi_hevc_dec,videobuf2_dma_contig,videobuf2_v4l2,uvcvideo,bcm2835_v4l2,v4l2_mem2mem,videobuf2_memops,bcm2835_isp
+mc                     61440  10 videodev,bcm2835_codec,rpi_hevc_dec,videobuf2_v4l2,uvcvideo,videobuf2_common,v4l2_mem2mem,bcm2835_isp
+
+============================================================
+  /dev/video* 节点列表
+============================================================
+crw-rw----+ 1 root video 81, 14 Apr  1 18:15 /dev/video0
+crw-rw----+ 1 root video 81, 15 Apr  1 18:15 /dev/video1
+crw-rw----+ 1 root video 81,  2 Mar 30 20:39 /dev/video10
+crw-rw----+ 1 root video 81,  7 Mar 30 20:39 /dev/video11
+crw-rw----+ 1 root video 81, 11 Mar 30 20:39 /dev/video12
+crw-rw----+ 1 root video 81,  1 Mar 30 20:39 /dev/video13
+crw-rw----+ 1 root video 81,  3 Mar 30 20:39 /dev/video14
+crw-rw----+ 1 root video 81,  4 Mar 30 20:39 /dev/video15
+crw-rw----+ 1 root video 81,  5 Mar 30 20:39 /dev/video16
+crw-rw----+ 1 root video 81, 12 Mar 30 20:39 /dev/video18
+crw-rw----+ 1 root video 81,  0 Mar 30 20:39 /dev/video19
+crw-rw----+ 1 root video 81,  6 Mar 30 20:39 /dev/video20
+crw-rw----+ 1 root video 81,  8 Mar 30 20:39 /dev/video21
+crw-rw----+ 1 root video 81,  9 Mar 30 20:39 /dev/video22
+crw-rw----+ 1 root video 81, 10 Mar 30 20:39 /dev/video23
+crw-rw----+ 1 root video 81, 13 Mar 30 20:39 /dev/video31
+
+============================================================
+  TB4117 热像仪诊断
+============================================================
+[1] USB 层
+  [OK] HikMicro 设备在总线上: Bus 001 Device 007: ID 2bdf:0101 HIK HikCamera
+
+[2] sysfs 节点定位
+  [OK] 找到 /dev/video1 (via sysfs VID)
+  [OK] 找到 /dev/video0 (via sysfs VID)
+
+[3] V4L2 支持格式 (v4l2-ctl --list-formats-ext)
+ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture
+
+	[0]: 'YUYV' (YUYV 4:2:2)
+		Size: Discrete 120x160
+			Interval: Discrete 0.040s (25.000 fps)
+		Size: Discrete 240x320
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 640x360
+			Interval: Discrete 0.033s (30.000 fps)
+	[1]: 'MJPG' (Motion-JPEG, compressed)
+		Size: Discrete 120x160
+			Interval: Discrete 0.040s (25.000 fps)
+		Size: Discrete 240x320
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 640x360
+			Interval: Discrete 0.033s (30.000 fps)
+	[2]: 'H264' (H.264, compressed)
+		Size: Discrete 240x320
+			Interval: Discrete 0.033s (30.000 fps)
+  [OK] 设备支持 MJPG
+
+[4] OpenCV 直接打开测试 (cv2.VideoCapture)
+  video0: 请求MJPG → 实际FOURCC='MJPG'  120x160
+  video0: 请求YUYV → 实际FOURCC='YUYV'  120x160
+[ WARN:0@0.099] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video1): can't open camera by index
+[ WARN:0@0.099] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+[ WARN:0@0.099] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video10): can't open camera by index
+[ WARN:0@0.099] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+[ WARN:0@0.099] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video11): can't open camera by index
+[ WARN:0@0.099] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+[ WARN:0@0.099] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video12): can't open camera by index
+[ WARN:0@0.099] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+[ WARN:0@0.099] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video13): can't open camera by index
+[ WARN:0@0.099] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+  video14: 请求MJPG → 实际FOURCC='BGR3'  160x120
+  [CANDIDATE] /dev/video14 分辨率匹配，尝试读帧...
+[ WARN:0@10.125] global cap_v4l.cpp:1049 tryIoctl VIDEOIO(V4L2:/dev/video14): select() timeout.
+  [FAIL] cap.read() 返回失败
+  video15: 请求MJPG → 实际FOURCC='YV12'  160x120
+  [CANDIDATE] /dev/video15 分辨率匹配，尝试读帧...
+[ WARN:0@20.150] global cap_v4l.cpp:1049 tryIoctl VIDEOIO(V4L2:/dev/video15): select() timeout.
+  [FAIL] cap.read() 返回失败
+[ WARN:0@20.154] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video16): can't open camera by index
+[ WARN:0@20.154] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+[ WARN:0@20.154] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video18): can't open camera by index
+[ WARN:0@20.155] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+[ WARN:0@20.155] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video19): can't open camera by index
+[ WARN:0@20.155] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+[ WARN:0@20.155] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video20): can't open camera by index
+[ WARN:0@20.155] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+  video21: 请求MJPG → 实际FOURCC='BGR3'  160x120
+  [CANDIDATE] /dev/video21 分辨率匹配，尝试读帧...
+[ WARN:0@30.183] global cap_v4l.cpp:1049 tryIoctl VIDEOIO(V4L2:/dev/video21): select() timeout.
+  [FAIL] cap.read() 返回失败
+  video22: 请求MJPG → 实际FOURCC='YV12'  160x120
+  [CANDIDATE] /dev/video22 分辨率匹配，尝试读帧...
+[ WARN:0@40.200] global cap_v4l.cpp:1049 tryIoctl VIDEOIO(V4L2:/dev/video22): select() timeout.
+  [FAIL] cap.read() 返回失败
+[ WARN:0@40.205] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video23): can't open camera by index
+[ WARN:0@40.205] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+[ WARN:0@40.205] global cap_v4l.cpp:914 open VIDEOIO(V4L2:/dev/video31): can't open camera by index
+[ WARN:0@40.205] global cap.cpp:478 open VIDEOIO(V4L2): backend is generally available but can't be used to capture by index
+
+[5] dmesg 中 USB 错误 (最近 20 条)
+[30923.749970] uvcvideo 1-1.3:1.1: Failed to resubmit video URB (-1).
+[30991.301099] usb 1-1.3: USB disconnect, device number 5
+[31025.669251] usb 1-1.4: new high-speed USB device number 6 using xhci_hcd
+[31025.758589] usb 1-1.4: New USB device found, idVendor=2bdf, idProduct=0101, bcdDevice= 4.09
+[31025.758616] usb 1-1.4: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+[31025.758631] usb 1-1.4: Product: HikCamera
+[31025.758642] usb 1-1.4: Manufacturer: HIK
+[31025.758653] usb 1-1.4: SerialNumber: E55346294
+[31025.776614] usb 1-1.4: Found UVC 1.10 device HikCamera (2bdf:0101)
+[31045.105264] usb 1-1.4: USB disconnect, device number 6
+[31062.838460] usb 1-1.3: new high-speed USB device number 7 using xhci_hcd
+[31062.941933] usb 1-1.3: New USB device found, idVendor=2bdf, idProduct=0101, bcdDevice= 4.09
+[31062.941963] usb 1-1.3: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+[31062.941969] usb 1-1.3: Product: HikCamera
+[31062.941973] usb 1-1.3: Manufacturer: HIK
+[31062.941977] usb 1-1.3: SerialNumber: E55346294
+[31062.945049] usb 1-1.3: Found UVC 1.10 device HikCamera (2bdf:0101)
+[31066.133403] uvcvideo 1-1.3:1.1: Failed to resubmit video URB (-1).
+[31066.133489] uvcvideo 1-1.3:1.1: Failed to resubmit video URB (-1).
+[33776.557450] uvcvideo 1-1.3:1.1: Failed to resubmit video URB (-1).
+
+============================================================
+  NYX650 Depth/IR FPS 下降诊断
+============================================================
+[1] ScepterSDK 安装检查
+  [OK] SDK 路径存在: /home/pi/ScepterSDK/MultilanguageSDK/Python
+  [MISS] /opt/ScepterSDK/MultilanguageSDK/Python
+
+[2] USB 带宽压力估算
+  NYX650 RGB 1600×1200 @15fps (MJPG 压缩后约 2-5 MB/s)
+  NYX650 Depth 640×480 @15fps (uint16 raw ≈ 9.2 MB/s)
+  NYX650 IR   640×480 @15fps (uint8  raw ≈ 4.6 MB/s)
+  TB4117  160×120  @25fps YUYV ≈ 0.9 MB/s / MJPG < 0.2 MB/s
+  Pi USB 2.0 实际可用带宽 ~35 MB/s，理论合计可能超限
+
+  USB 拓扑树:
+/:  Bus 02.Port 1: Dev 1, Class=root_hub, Driver=xhci_hcd/4p, 5000M
+/:  Bus 01.Port 1: Dev 1, Class=root_hub, Driver=xhci_hcd/1p, 480M
+    |__ Port 1: Dev 2, If 0, Class=Hub, Driver=hub/4p, 480M
+        |__ Port 3: Dev 7, If 0, Class=Video, Driver=uvcvideo, 480M
+        |__ Port 3: Dev 7, If 1, Class=Video, Driver=uvcvideo, 480M
+
+[3] CPU/内存压力
+top - 19:19:30 up  9:41,  2 users,  load average: 0.30, 0.26, 0.20
+Tasks: 241 total,   3 running, 238 sleeping,   0 stopped,   0 zombie
+%Cpu(s): 18.2 us, 18.2 sy,  0.0 ni, 63.6 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st 
+MiB Mem :   1845.7 total,    335.7 free,    801.7 used,    968.3 buff/cache     
+MiB Swap:    512.0 total,    174.0 free,    338.0 used.   1044.0 avail Mem 
+
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+    702 vnc       20   0  713480  32308  21976 S  11.8   1.7   7:32.54 wayvnc
+   3126 pi        20   0  565064  52216  29216 S  11.8   2.8   3:53.71 lxtermi+
+   8367 pi        20   0   11688   4924   2864 R  11.8   0.3   0:00.04 top
+     84 root       0 -20       0      0      0 I   5.9   0.0   2:10.88 kworker+
+    811 pi        20   0  639108 
+
+[4] dmesg USB 错误 / 过流警告
+[29613.042835] usb 1-1.3: USB disconnect, device number 3
+[30017.477238] usb 1-1.1: USB disconnect, device number 4
+[30991.301099] usb 1-1.3: USB disconnect, device number 5
+[31045.105264] usb 1-1.4: USB disconnect, device number 6
+
+[5] 建议的 FPS 告警阈值调整
+  当前配置 fps_warn_ratio=0.7, target=15 → 告警线=10.5fps
+  Pi 实测 ToF depth 约 6fps，建议将 fps_warn_ratio 调低至 0.35
+  或将 depth/IR fps 目标降至 10，在 config/default.yaml 中修改：
+
+    camera:
+      nyx650:
+        depth:
+          fps: 10    # 从 15 改为 10
+        ir:
+          fps: 10    # 从 15 改为 10
+
+============================================================
+  诊断完成
+============================================================
