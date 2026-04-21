@@ -33,6 +33,7 @@ Directory layout
             ...
 """
 
+import copy
 import csv
 import json
 import os
@@ -128,7 +129,7 @@ class SessionRecorder:
 
     ALL_MODALITIES = ("RGB", "Depth", "IR", "Thermal")
 
-    def __init__(self, base_dir, labels, config=None):
+    def __init__(self, base_dir, labels, config=None, start_ns=None):
         """
         Parameters
         ----------
@@ -150,6 +151,7 @@ class SessionRecorder:
 
         # Session directory
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._session_id = stamp
         self._session_dir = Path(base_dir) / raw_sub / f"session_{stamp}"
 
         # Create modality sub-directories
@@ -168,7 +170,8 @@ class SessionRecorder:
         # Breakpoint log
         self._breakpoints = []
 
-        self._start_ns = time.time_ns()
+        self._start_ns = int(start_ns if start_ns is not None else time.time_ns())
+        self._external_metadata = {}
 
         self._lock = threading.Lock()
 
@@ -181,6 +184,18 @@ class SessionRecorder:
     @property
     def session_dir(self):
         return self._session_dir
+
+    @property
+    def session_id(self):
+        return self._session_id
+
+    @property
+    def recording_start_ns(self):
+        return self._start_ns
+
+    def set_external_metadata(self, metadata):
+        with self._lock:
+            self._external_metadata = copy.deepcopy(metadata or {})
 
     def write_frame(self, modality, frame, timestamp_ns):
         """Enqueue a frame for writing and record its timestamp."""
@@ -245,7 +260,11 @@ class SessionRecorder:
                     writer.writerow(row)
 
     def _write_session_meta(self, stop_ns, writer_stats):
+        with self._lock:
+            external_metadata = copy.deepcopy(self._external_metadata)
+
         meta = {
+            "session_id":          self._session_id,
             "labels":              self._labels,
             "breakpoints":         self._breakpoints,
             "recording_start_ns":  self._start_ns,
@@ -255,6 +274,16 @@ class SessionRecorder:
             "writer_stats":        writer_stats,
             "save_formats":        {m: self._resolve_format(m) for m in self.ALL_MODALITIES},
         }
+        if external_metadata:
+            meta["multimodal"] = external_metadata
+            extra_modalities = [
+                name
+                for name, info in external_metadata.get("modalities", {}).items()
+                if info.get("enabled")
+            ]
+            if extra_modalities:
+                meta["modalities"] = list(self.ALL_MODALITIES) + extra_modalities
+
         meta_path = self._session_dir / "session_meta.json"
         with open(meta_path, "w") as fh:
             json.dump(meta, fh, indent=2)

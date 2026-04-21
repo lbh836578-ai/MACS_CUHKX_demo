@@ -159,7 +159,7 @@ class PostProcessor(QThread):
                 all_ok = False
 
         return {
-            "session_id": meta.get("labels", []),
+            "session_id": meta.get("session_id", ""),
             "labels": meta.get("labels", []),
             "num_actions": len(segments),
             "recording_duration_sec": round(

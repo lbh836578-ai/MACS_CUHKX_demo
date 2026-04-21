@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Post-processing Time &amp; Classification Accuracy</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: linear-gradient(145deg, #dce5f0, #c5d1e6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 40px;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 22px;
+      box-shadow:
+        0 2px 6px  rgba(0,0,0,0.04),
+        0 14px 40px rgba(0,0,0,0.11),
+        0 32px 78px rgba(0,0,0,0.08);
+      padding: 20px 18px 14px 10px;
+      display: inline-block;
+      line-height: 0;
+    }
+  </style>
+</head>
+<body>
+<div class="card">
+
+<!--
+  SVG  860 × 498
+  Plot : x₀=108  y₀=60  x₁=742  y₁=420   w=634  h=360
+  ─────────────────────────────────────────────────────
+  Left  Y  (time, 0–20 min)  : yT(v) = 420 − v × 18
+    ticks: 0→420  4→348  8→276  12→204  16→132  20→60
+  Right Y  (accuracy, 94–99%): yA(a) = 420 − (a−94)×72
+    ticks: 94%→420  95%→348  96%→276  97%→204  98%→132  99%→60
+  ─────────────────────────────────────────────────────
+  Group centres  x: 30s→216   1min→425   3min→634
+  Bars  barW=26, gap=8 → Manual x=centre−30, MACS x=centre+4
+  ─────────────────────────────────────────────────────
+  Time data   [Manual, MACS]:
+    30s  [3.5,  0.75]    1min [5.8, 3.5]    3min [16.1, 10.5]
+  Accuracy data [Manual, MACS]:
+    30s  [98.2, 97.8]    1min [97.5, 96.2]  3min [96.7, 95.2]
+-->
+
+<svg width="900" height="498"
+     xmlns="http://www.w3.org/2000/svg"
+     font-family="Georgia, 'Times New Roman', Times, serif">
+
+  <defs>
+    <linearGradient id="gM" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#F5B7B1"/>
+      <stop offset="100%" stop-color="#E8746E"/>
+    </linearGradient>
+    <linearGradient id="gA" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#AED6F1"/>
+      <stop offset="100%" stop-color="#5DADE2"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ══════════════════════════════════════════════
+       LEGEND — 2 rows, visually centred
+  ══════════════════════════════════════════════════ -->
+
+  <!-- Row 1 · bar colours  (baseline y = 23) -->
+  <rect x="228" y="11" width="24" height="14" rx="3" fill="url(#gM)" opacity="0.88"/>
+  <text x="258" y="23" font-size="23" font-weight="bold" fill="#2c2c2c">Manual &#x2014; Time</text>
+
+  <rect x="488" y="11" width="24" height="14" rx="3" fill="url(#gA)" opacity="0.88"/>
+  <text x="518" y="23" font-size="23" font-weight="bold" fill="#2c2c2c">MACS &#x2014; Time</text>
+
+  <!-- Row 2 · line styles  (baseline y = 44) -->
+  <line  x1="193" y1="38" x2="229" y2="38"
+         stroke="#C0392B" stroke-width="2.5" stroke-dasharray="7,5"/>
+  <circle cx="211" cy="38" r="5.5" fill="#C0392B" stroke="white" stroke-width="1.8"/>
+  <text  x="235" y="44" font-size="23" font-weight="bold" fill="#2c2c2c">Manual &#x2014; Accuracy</text>
+
+  <line  x1="488" y1="38" x2="524" y2="38"
+         stroke="#1A5276" stroke-width="2.5"/>
+  <circle cx="506" cy="38" r="5.5" fill="#1A5276" stroke="white" stroke-width="1.8"/>
+  <text  x="530" y="44" font-size="23" font-weight="bold" fill="#2c2c2c">MACS &#x2014; Accuracy</text>
+
+  <!-- ══════════════════════════════════════════════
+       GRID  (shared by both Y-axes — same tick spacing)
+  ══════════════════════════════════════════════════ -->
+  <g stroke="#e2e6ec" stroke-width="1.2" stroke-dasharray="5,4">
+    <line x1="108" y1="420" x2="742" y2="420"/>
+    <line x1="108" y1="348" x2="742" y2="348"/>
+    <line x1="108" y1="276" x2="742" y2="276"/>
+    <line x1="108" y1="204" x2="742" y2="204"/>
+    <line x1="108" y1="132" x2="742" y2="132"/>
+    <line x1="108" y1="60"  x2="742" y2="60"/>
+  </g>
+
+  <!-- ══════════════════════════════════════════════
+       BARS
+  ══════════════════════════════════════════════════ -->
+
+  <!-- 30 s   Manual 3.5 min  MACS 0.75 min -->
+  <rect x="230" y="357"   width="42" height="63"    rx="4" fill="url(#gM)" opacity="0.88"/>
+  <rect x="280" y="406.5" width="42" height="13.5"  rx="2" fill="url(#gA)" opacity="0.88"/>
+
+  <!-- 1 min  Manual 5.8 min  MACS 3.5 min -->
+  <rect x="379" y="315.6" width="42" height="104.4" rx="4" fill="url(#gM)" opacity="0.88"/>
+  <rect x="429" y="357"   width="42" height="63"    rx="4" fill="url(#gA)" opacity="0.88"/>
+
+  <!-- 3 min  Manual 16.1 min  MACS 10.5 min -->
+  <rect x="528" y="130.2" width="42" height="289.8" rx="4" fill="url(#gM)" opacity="0.88"/>
+  <rect x="578" y="231"   width="42" height="189"   rx="4" fill="url(#gA)" opacity="0.88"/>
+
+  <!-- ══════════════════════════════════════════════
+       ACCURACY LINES
+       yA: 98.2%→117.6  97.5%→168  96.7%→225.6
+           97.8%→146.4  96.2%→261.6  95.2%→333.6
+  ══════════════════════════════════════════════════ -->
+
+  <!-- Manual — red dashed -->
+  <polyline
+    points="276,117.6  425,168  574,225.6"
+    fill="none" stroke="#C0392B" stroke-width="2.8"
+    stroke-dasharray="9,6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="276" cy="117.6" r="7.5" fill="#C0392B" stroke="white" stroke-width="2.2"/>
+  <circle cx="425" cy="168"   r="7.5" fill="#C0392B" stroke="white" stroke-width="2.2"/>
+  <circle cx="574" cy="225.6" r="7.5" fill="#C0392B" stroke="white" stroke-width="2.2"/>
+
+  <!-- MACS — blue solid -->
+  <polyline
+    points="276,146.4  425,261.6  574,333.6"
+    fill="none" stroke="#1A5276" stroke-width="2.8"
+    stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="276" cy="146.4" r="7.5" fill="#1A5276" stroke="white" stroke-width="2.2"/>
+  <circle cx="425" cy="261.6" r="7.5" fill="#1A5276" stroke="white" stroke-width="2.2"/>
+  <circle cx="574" cy="333.6" r="7.5" fill="#1A5276" stroke="white" stroke-width="2.2"/>
+
+  <!-- ══════════════════════════════════════════════
+       AXIS BORDERS
+  ══════════════════════════════════════════════════ -->
+  <line x1="108" y1="60"  x2="108" y2="420" stroke="#484848" stroke-width="2"/>
+  <line x1="742" y1="60"  x2="742" y2="420" stroke="#484848" stroke-width="2"/>
+  <line x1="108" y1="420" x2="742" y2="420" stroke="#484848" stroke-width="2"/>
+
+  <!-- ══════════════════════════════════════════════
+       LEFT Y-AXIS — ticks · labels · rotated title
+  ══════════════════════════════════════════════════ -->
+  <g stroke="#484848" stroke-width="1.5">
+    <line x1="101" y1="420" x2="108" y2="420"/>
+    <line x1="101" y1="348" x2="108" y2="348"/>
+    <line x1="101" y1="276" x2="108" y2="276"/>
+    <line x1="101" y1="204" x2="108" y2="204"/>
+    <line x1="101" y1="132" x2="108" y2="132"/>
+    <line x1="101" y1="60"  x2="108" y2="60"/>
+  </g>
+  <g font-size="22" fill="#2c2c2c" text-anchor="end" dominant-baseline="middle">
+    <text x="92" y="420">0</text>
+    <text x="92" y="348">4</text>
+    <text x="92" y="276">8</text>
+    <text x="92" y="204">12</text>
+    <text x="92" y="132">16</text>
+    <text x="92" y="60">20</text>
+  </g>
+  <text transform="translate(68,240) rotate(-90)"
+        font-size="24" font-weight="bold" fill="#181818" text-anchor="middle">
+     Time (min)
+  </text>
+
+  <!-- ══════════════════════════════════════════════
+       RIGHT Y-AXIS — ticks · labels · rotated title
+  ══════════════════════════════════════════════════ -->
+  <g stroke="#484848" stroke-width="1.5">
+    <line x1="742" y1="420" x2="749" y2="420"/>
+    <line x1="742" y1="348" x2="749" y2="348"/>
+    <line x1="742" y1="276" x2="749" y2="276"/>
+    <line x1="742" y1="204" x2="749" y2="204"/>
+    <line x1="742" y1="132" x2="749" y2="132"/>
+    <line x1="742" y1="60"  x2="749" y2="60"/>
+  </g>
+  <g font-size="22" fill="#2c2c2c" text-anchor="start" dominant-baseline="middle">
+    <text x="757" y="420">94%</text>
+    <text x="757" y="348">95%</text>
+    <text x="757" y="276">96%</text>
+    <text x="757" y="204">97%</text>
+    <text x="757" y="132">98%</text>
+    <text x="757" y="60">99%</text>
+  </g>
+  <text transform="translate(818,240) rotate(-90)"
+        font-size="24" font-weight="bold" fill="#181818" text-anchor="middle">
+     Accuracy (%)
+  </text>
+
+  <!-- ══════════════════════════════════════════════
+       X-AXIS — group labels + bold title
+  ══════════════════════════════════════════════════ -->
+  <g font-size="22" fill="#2c2c2c" text-anchor="middle">
+    <text x="276" y="447">30 s</text>
+    <text x="425" y="447">1 min</text>
+    <text x="574" y="447">3 min</text>
+  </g>
+  <text x="425" y="486"
+        font-size="24" font-weight="bold" fill="#111111" text-anchor="middle">
+    Total Recording Duration
+  </text>
+
+</svg>
+</div>
+</body>
+</html>

@@ -1,0 +1,111 @@
+我先对两边代码做针对性梳理：确认树莓派当前发什么、发到哪里、数据长什么样，再对照云端现有训练入口和数据格式，判断是否能同时保留模拟数据生成并接入真实数据训练。
+
+
+第一轮信息已经明确了两点：树莓派侧确实有现成的 HTTP 上传链路，但云端目录里仍然只有训练/推理脚本，没有任何 Web 接口实现。接下来我会把两边的数据结构和训练输入格式对齐，判断“同时保留模拟数据和接收真实数据训练”在逻辑上差哪几层。
+
+
+现在已经能看到接口层面的核心矛盾了：树莓派发的是按时间点聚合的传感器字典，云端训练吃的是固定窗口张量加完整监督标签。下一轮我把这两个结构拆开看清楚，判断哪些功能能并存，哪些必须加“适配层”和“标注策略”才能成立。
+
+
+
+我已经定位到主要差距不是“模型不能同时做两件事”，而是“真实数据接入链路缺了训练所需的监督和窗口化层”。最后再补一轮带行号的关键证据，我就能给你一个比较硬的结论，包括能做、不能直接做、以及最小可行落地方案。
+
+搜索正则表达式 `requests.post|sensor-data/batch|gateway_id|X-API-Key|upload_queue` (`**/iot_gateway(pi)/src/cloud_uploader.py`)，18 个结果
+
+搜索文本 `window_size|api_url|upload_interval` (`**/iot_gateway(pi)/config/config.yaml`)，3 个结果
+
+搜索正则表达式 `result = \{|processed_sensors|device_timestamp|metadata|sensors|VALID_RANGES` (`**/iot_gateway(pi)/src/data_processor.py`)，13 个结果
+
+搜索正则表达式 `CREATE TABLE IF NOT EXISTS sensor_data|get_unuploaded_data|GROUP|sensor_type|uploaded = 0` (`**/iot_gateway(pi)/src/local_storage.py`)，20 个结果
+
+搜索文本 `window_size|output_features|temp_1|humidity_1|soil_1|light` (`**/trustfusion_gnn/config.py`)，26 个结果
+
+搜索正则表达式 `fusion_target = torch.zeros|credibility_target = 1.0 - fault_mask|generate_dataset|create_dataloader` (`**/trustfusion_gnn/data_simulator.py`)，4 个结果
+
+搜索正则表达式 `create_dataloader_from_npz|overall_reasonable|Trainer\(|trainer.train\(|trainer.evaluate\(` (`**/trustfusion_gnn/train_on_simulated_data.py`)，10 个结果
+
+搜索正则表达式 `Flask|FastAPI|requests.post|app = |@app|APIRouter|uvicorn` (`**/trustfusion_gnn/**/*.py`)，无结果
+
+证据已经够判断 80% 了，剩下只要补两点就能定性：一是云端有没有任何 HTTP 服务骨架，二是训练时究竟依赖哪些标签。补完这两点，我给你的结论就会非常明确。
+
+搜索正则表达式 `Flask|FastAPI|@app|APIRouter|uvicorn|http.server|BaseHTTPRequestHandler` (`**/trustfusion_gnn/**`)，无结果
+
+搜索正则表达式 `fusion_target|fault_mask|credibility_target|criterion|losses` (`**/trustfusion_gnn/trainer.py`)，76 个结果
+
+搜索正则表达式 `fusion_target|fault_mask|credibility_target` (`**/trustfusion_gnn/losses.py`)，7 个结果
+
+读取 [](file:///Users/labahua/Desktop/5230/5230/trustfusion_gnn/trainer.py#140-140)，行 140 到 260
+
+读取 [](file:///Users/labahua/Desktop/5230/5230/trustfusion_gnn/losses.py)
+
+我已经能下结论了，不过再补一个很关键的链路证据：树莓派主流程现在到底是“存库后上传”，还是“直接喂模型”。这个能决定云端未来应该做 API 服务还是直接嵌训练器。
+
+搜索正则表达式 `save_sensor_data|add_to_queue|set_data_callback|subscribe\(|cloud_uploader.start` (`**/iot_gateway(pi)/main.py`)，5 个结果
+
+搜索正则表达式 `messages_received|gateway_timestamp|topic|data_callback` (`**/iot_gateway(pi)/src/mqtt_handler.py`)，32 个结果
+
+搜索正则表达式 `output_features|num_sensors|window_size|device: str` (`**/trustfusion_gnn/config.py`)，5 个结果
+
+搜索正则表达式 `simulated_data|generate_simulated_dataset|train_on_simulated_data|analyze_simulated_data` (`**/trustfusion_gnn/README.md`)，19 个结果
+
+**结论**
+
+从系统逻辑上看，可以同时保留模拟数据生成和接收树莓派真实数据，这两件事本身并不冲突。现在的 TrustFusion-GNN 已经具备完整的模拟数据生成、导出、分析和训练链路，trustfusion_gnn/README.md 和 trustfusion_gnn/README.md 已经把这条路径写得很清楚。
+
+但按当前代码状态，云端还不能直接做到“接收树莓派数据后就用现有训练器训练”。原因不是模型结构不允许，而是中间缺了三层关键能力：接收 API、真实数据到训练张量的窗口化适配、以及真实数据训练所需的监督标签构造。
+
+**现状判断**
+
+树莓派侧已经有完整的上传客户端。它会把处理后的数据先存本地，再放入上传队列，随后批量发到云端 API：iot_gateway(pi)/main.py、iot_gateway(pi)/main.py。实际上传请求是 HTTP POST 到 /sensor-data/batch，并带 X-API-Key：iot_gateway(pi)/src/cloud_uploader.py。本地 SQLite 里保存的是逐条传感器记录，字段是 node_id、timestamp、sensor_type、value、quality、is_anomaly 等，iot_gateway(pi)/src/local_storage.py。未上传数据虽然会按时间戳重新分组，但本质上仍然是事件流形式，而不是训练直接可用的固定窗口样本：iot_gateway(pi)/src/local_storage.py。
+
+云端侧已经具备完整的模拟训练链路，但它是离线批训练，不是在线接入训练。当前训练入口是从导出的数据文件加载 DataLoader，然后调用 Trainer 做 batch 训练和验证：trustfusion_gnn/train_on_simulated_data.py。模拟标签也是在模拟器里直接构造出来的，包含 fusion_target 和 credibility_target，且 credibility_target 本质上是由 fault_mask 反推出来的：trustfusion_gnn/data_simulator.py。这说明现有训练流程高度依赖“已知真值”。
+
+更关键的是，云端目录里目前没有任何 Web 服务实现。我做了代码搜索，TrustFusion-GNN 下没有 Flask、FastAPI、APIRouter、uvicorn 之类的服务端入口命中。换句话说，树莓派现在有“发”的能力，但云端没有“收”的服务骨架。
+
+**为什么现在不能直接拿树莓派数据训练**
+
+第一，数据形态不一致。云端模型配置写死了 7 个传感器、窗口长度 60、输出 4 个通道：trustfusion_gnn/config.py。它的传感器拓扑也是固定命名的 temp_1、humidity_1、temp_2、humidity_2、soil_1、soil_2、light：trustfusion_gnn/config.py。而树莓派侧当前处理的是按 node_id 和 sensors 字典组织的实时消息，处理窗口配置还是 20：iot_gateway(pi)/src/data_processor.py、iot_gateway(pi)/config/config.yaml。这意味着真实上报不能直接喂给当前模型，需要先做传感器身份映射、时间对齐、重采样、缺失补齐和窗口切片。
+
+第二，监督信号不一致。当前 Trainer 在训练和验证时都显式要求 batch 里包含 X、fusion_target、fault_mask、credibility_target：trustfusion_gnn/trainer.py、trustfusion_gnn/trainer.py。损失函数也直接用 fusion_target 做融合监督、用 fault_mask 做异常监督、用 credibility_target 做可信度监督：trustfusion_gnn/losses.py、trustfusion_gnn/losses.py。但树莓派上传的数据只有 value、quality、is_anomaly 这类边缘侧处理结果，iot_gateway(pi)/src/data_processor.py，并没有真实的 clean fusion target，也没有严格定义过的可信度真值。所以按当前损失设计，真实数据无法直接作为“全监督训练样本”使用。
+
+第三，运行模式不一致。现在的云端训练器是典型离线训练器，设计上是“准备好数据集，再训练”，而不是“每收到一批实时上传就立即增量更新”。这从 trustfusion_gnn/train_on_simulated_data.py 和 trustfusion_gnn/trainer.py 的调用方式可以看得很清楚。要把树莓派接入训练，推荐的模式不是在线即时训练，而是先接收和落库，再定时构造训练集，最后做周期性重训或微调。
+
+**能不能两种功能同时存在**
+
+可以，而且这是最合理的架构。
+
+模拟数据生成应继续保留，因为它解决了两个现实问题：一是当前真实数据还没有完整监督标签；二是真实故障样本通常稀少，模拟数据可以持续提供覆盖全面的故障分布。真实树莓派数据则更适合作为第二数据源，用于域适配、微调、验证分布漂移、或者做弱监督训练。也就是说，最佳形态不是“二选一”，而是“模拟数据预训练 + 真实数据微调/校准”。
+
+从语义层面，两边其实已经有很强的对齐基础。树莓派侧处理的有效传感器类型就是 temperature、humidity、soil_moisture、light：iot_gateway(pi)/src/data_processor.py。云端输出通道也是这四类：trustfusion_gnn/config.py。所以业务语义是对得上的，问题主要在工程适配层和监督层，而不是任务定义本身。
+
+**最小可行落地方案**
+
+如果目标是“云端既能生成模拟数据，又能接收树莓派数据并最终用于训练”，最小可行方案应该是这样：
+
+1. 增加云端接收 API。专门接收树莓派发来的 /sensor-data/batch 请求，只负责鉴权、入库、返回状态，不直接触发训练。
+2. 增加真实数据落库与映射层。把 node_id + sensor_type 映射成云端固定传感器位序，按 60 步窗口重建成模型输入张量。
+3. 增加标签构造策略。最简单的是弱监督方案：
+   树莓派上传的 quality 可先映射成 credibility_target。
+   边缘异常标记和规则检测结果可先映射成 fault_mask 的弱标签。
+   fusion_target 可以先用多传感器稳健聚合近似生成，而不是要求人工真值。
+4. 增加混合训练入口。保留现有模拟训练脚本，再新增一个 hybrid training 脚本，按一定比例混合 simulated_data 和 real_data。
+5. 训练方式采用周期性重训或微调，而不是每次 HTTP 上传就立即训练。
+
+**最终判断**
+
+如果你的问题是“从系统功能逻辑上，云端能不能同时有模拟数据生成能力，又能接收树莓派数据并用于训练”，答案是：能。
+
+如果你的问题是“按当前这两个目录里的现有代码，能不能现在就直接做到”，答案是：不能直接做到。
+
+更准确地说，当前状态是：
+
+1. 模拟数据生成与模拟训练，已经完整可用。
+2. 树莓派到云端的上传客户端，已经基本可用。
+3. 云端接收服务、真实数据窗口化、真实训练标签构造，这三层还没有实现。
+4. 所以现在可以接真实数据做存储和后处理的前半段设计，但还不能直接接真实数据跑现有 Trainer 做训练。
+
+如果你要继续，我建议下一步按这个顺序推进：
+
+1. 我先给你设计一版云端真实数据接收与训练的数据契约，包括请求体、落库表结构、传感器映射和窗口化规则。
+2. 我直接在 trustfusion_gnn 里补一套最小云端接收层，加上真实数据转训练样本的适配脚本。
+3. 我进一步把模拟数据和真实数据合并成一个混合训练入口，让这套系统同时支持 synthetic pretrain 和 real-data fine-tune。

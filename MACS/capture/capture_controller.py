@@ -38,6 +38,7 @@ from .fps_counter import FPSCounter
 from .sync_manager import SyncManager
 from .recorder import SessionRecorder
 from .nyx650_driver import NYX650Driver
+from .session_coordinator import SessionCoordinator
 from .tb4117_driver import TB4117Driver
 from .health_monitor import HealthMonitor, AlertLevel
 
@@ -90,6 +91,7 @@ class CaptureController(QObject):
         # ---- recorder (created per session) --------------------------------
         self._recorder = None
         self._recording = False
+        self._session_coordinator = SessionCoordinator(config=config, logger=self._log)
 
         # ---- state flags ---------------------------------------------------
         self._nyx_ok = False
@@ -135,17 +137,31 @@ class CaptureController(QObject):
         if not self._tb_driver.isRunning():
             self._tb_driver.start()
 
+        summary = self._session_coordinator.prepare()
+        for name, info in summary.get("modalities", {}).items():
+            if not info.get("enabled"):
+                continue
+            if info.get("prepared"):
+                self._log(f"{name} prepared")
+            elif info.get("error"):
+                self._log(f"{name} unavailable: {info['error']}")
+
     def shutdown(self):
         """Stop camera threads and any active recorder.  Blocking."""
         self._recording = False
+        multimodal_meta = None
+        if self._recorder is not None:
+            multimodal_meta = self._session_coordinator.stop_session()
         self._nyx_driver.stop(timeout_ms=5000)
         self._tb_driver.stop(timeout_ms=5000)
         if self._recorder is not None:
             try:
+                self._recorder.set_external_metadata(multimodal_meta)
                 self._recorder.finalize()
             except Exception:
                 pass
             self._recorder = None
+        self._session_coordinator.shutdown()
 
     # ================================================================
     # Driver connection status
@@ -201,7 +217,17 @@ class CaptureController(QObject):
     @pyqtSlot(list)
     def _on_recording_started(self, labels):
         base_dir = self._cfg.get("recording", {}).get("output_dir", "data")
-        self._recorder = SessionRecorder(base_dir, labels, self._cfg)
+        session_start_ns = time.time_ns()
+        self._recorder = SessionRecorder(
+            base_dir,
+            labels,
+            self._cfg,
+            start_ns=session_start_ns,
+        )
+        self._session_coordinator.start_session(
+            self._recorder.session_dir,
+            session_start_ns,
+        )
         self._recording = True
 
         # Reset counters for the new session
@@ -235,6 +261,9 @@ class CaptureController(QObject):
         session_path = None
         if self._recorder is not None:
             try:
+                self._recorder.set_external_metadata(
+                    self._session_coordinator.stop_session()
+                )
                 session_path = self._recorder.finalize()
                 self._log(f"Session saved to {session_path}")
             except Exception as exc:
@@ -251,6 +280,7 @@ class CaptureController(QObject):
         self._health.stop()
         if self._recorder is not None:
             try:
+                self._session_coordinator.discard_session()
                 self._recorder.discard()
                 self._log("Session discarded")
             except Exception as exc:
@@ -320,6 +350,9 @@ class CaptureController(QObject):
             self._health.stop()
             if self._recorder is not None:
                 try:
+                    self._recorder.set_external_metadata(
+                        self._session_coordinator.stop_session()
+                    )
                     path = self._recorder.finalize()
                     self._log(f"Auto-saved session to {path}")
                 except Exception as exc:

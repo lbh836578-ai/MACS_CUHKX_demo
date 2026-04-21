@@ -47,3 +47,36 @@ ui:
   preview_width: 320
   preview_height: 240
   status_update_interval_ms: 500
+
+multimodal:
+  mmwave:
+    enabled: false
+    cli_port: "/dev/ttyUSB0"
+    data_port: "/dev/ttyUSB1"
+    cli_baudrate: 115200
+    data_baudrate: 921600
+    read_chunk_size: 4096
+    command_timeout_s: 3.0
+    post_config_delay_s: 1.0
+    max_packet_size: 65536
+    config_path: "config/profile_human.cfg"
+
+  imu:
+    enabled: false
+    sample_rate_hz: 50
+    connect_timeout_s: 15
+    reconnect_delay_s: 3
+    ready_timeout_s: 8
+    notify_uuid: "0000ffe4-0000-1000-8000-00805f9a34fb"
+    write_uuid: "0000ffe9-0000-1000-8000-00805f9a34fb"
+    devices:
+      - label: "imu01_left_wrist"
+        mac: "AA:BB:CC:DD:EE:FF"
+      - label: "imu02_right_wrist"
+        mac: ""
+      - label: "imu03_waist"
+        mac: ""
+      - label: "imu04_left_ankle"
+        mac: ""
+      - label: "imu05_right_ankle"
+        mac: ""

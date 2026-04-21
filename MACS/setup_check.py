@@ -8,8 +8,10 @@ Checks performed:
   1. Python version and required packages
   2. NYX650 (ToF) camera - ScepterSDK availability and device probe
   3. TB4117 (Thermal) camera - V4L2 device enumeration and OpenCV probe
-  4. USB device listing
-  5. Disk space availability
+    4. mmWave radar - CP2105 USB bridge and /dev/ttyUSB* probe
+    5. Bluetooth adapter availability for IMU collection
+    6. USB device listing
+    7. Disk space availability
 """
 
 import sys
@@ -63,6 +65,8 @@ class SystemChecker:
         "numpy": "numpy",
         "PyQt5": "PyQt5",
         "yaml":  "PyYAML",
+        "serial": "pyserial",
+        "bleak": "bleak",
     }
 
     def __init__(self):
@@ -257,6 +261,130 @@ class SystemChecker:
                     "could not open"
                 ))
 
+    # -- mmWave -------------------------------------------------------------
+
+    def check_mmwave_radar(self):
+        rc, stdout = self._run_cmd(["lsusb"])
+        if rc != 0:
+            self._add(CheckResult(
+                "mmWave USB bridge", CheckResult.WARN,
+                "lsusb unavailable"
+            ))
+        else:
+            matches = [
+                line.strip() for line in stdout.splitlines()
+                if ("cp2105" in line.lower() or "10c4:ea70" in line.lower())
+            ]
+            if matches:
+                self._add(CheckResult(
+                    "mmWave USB bridge", CheckResult.PASS, matches[0]
+                ))
+            else:
+                self._add(CheckResult(
+                    "mmWave USB bridge", CheckResult.WARN,
+                    "no CP2105 bridge detected in lsusb"
+                ))
+
+        tty_ports = sorted(Path("/dev").glob("ttyUSB*"))
+        if tty_ports:
+            self._add(CheckResult(
+                "mmWave serial ports", CheckResult.PASS,
+                ", ".join(port.name for port in tty_ports)
+            ))
+        else:
+            self._add(CheckResult(
+                "mmWave serial ports", CheckResult.WARN,
+                "no /dev/ttyUSB* nodes found"
+            ))
+
+        cfg_path = Path("config/profile_human.cfg")
+        if cfg_path.is_file():
+            self._add(CheckResult(
+                "mmWave config file", CheckResult.PASS, str(cfg_path)
+            ))
+        else:
+            self._add(CheckResult(
+                "mmWave config file", CheckResult.WARN,
+                f"missing {cfg_path}"
+            ))
+
+    # -- IMU / Bluetooth ----------------------------------------------------
+
+    def check_bluetooth_adapter(self):
+        rc, stdout = self._run_cmd(["bluetoothctl", "show"])
+        if rc == 0 and stdout.strip():
+            lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+            controller = next(
+                (line for line in lines if line.startswith("Controller ")),
+                "Bluetooth controller",
+            )
+            powered_line = next(
+                (line for line in lines if line.startswith("Powered:")),
+                "",
+            )
+            if powered_line.lower().endswith("yes"):
+                self._add(CheckResult(
+                    "Bluetooth adapter", CheckResult.PASS,
+                    f"{controller}  {powered_line}"
+                ))
+                return
+
+            if powered_line.lower().endswith("no"):
+                rc_rfkill, rfkill_stdout = self._run_cmd(
+                    ["rfkill", "list", "bluetooth"]
+                )
+                blocked = []
+                if rc_rfkill == 0:
+                    lower = rfkill_stdout.lower()
+                    if "soft blocked: yes" in lower:
+                        blocked.append("soft-blocked")
+                    if "hard blocked: yes" in lower:
+                        blocked.append("hard-blocked")
+
+                message = f"{controller}  {powered_line}"
+                if blocked:
+                    message += f" ({', '.join(blocked)})"
+                message += (
+                    "; try: sudo rfkill unblock bluetooth && "
+                    "sudo bluetoothctl power on"
+                )
+                self._add(CheckResult(
+                    "Bluetooth adapter", CheckResult.WARN, message
+                ))
+                return
+
+        rc, stdout = self._run_cmd(["hciconfig"])
+        if rc == 0 and stdout.strip():
+            lines = stdout.splitlines()
+            header = next((line.strip() for line in lines if line.strip()), "")
+            status_line = next(
+                (line.strip() for line in lines if "UP RUNNING" in line.upper()),
+                "",
+            )
+            if status_line:
+                self._add(CheckResult(
+                    "Bluetooth adapter", CheckResult.PASS,
+                    f"{header}  {status_line}"
+                ))
+            else:
+                self._add(CheckResult(
+                    "Bluetooth adapter", CheckResult.WARN,
+                    header or "adapter found but not UP RUNNING"
+                ))
+            return
+
+        rc, stdout = self._run_cmd(["bluetoothctl", "list"])
+        if rc == 0 and stdout.strip():
+            self._add(CheckResult(
+                "Bluetooth adapter", CheckResult.PASS,
+                stdout.strip().splitlines()[0]
+            ))
+        else:
+            self._add(CheckResult(
+                "Bluetooth adapter", CheckResult.WARN,
+                "no active Bluetooth controller detected"
+            ))
+
     # -- USB -----------------------------------------------------------------
 
     def check_usb_devices(self):
@@ -340,6 +468,12 @@ class SystemChecker:
         print("\n[TB4117 Thermal Camera (V4L2)]")
         self.check_tb4117_v4l2()
         self.check_tb4117_opencv()
+
+        print("\n[mmWave Radar]")
+        self.check_mmwave_radar()
+
+        print("\n[IMU / Bluetooth]")
+        self.check_bluetooth_adapter()
 
         print("\n[USB Devices]")
         self.check_usb_devices()

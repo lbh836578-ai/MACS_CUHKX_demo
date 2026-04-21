@@ -154,9 +154,7 @@ python3 DeviceConnectBySN.py
 ### 5.3 项目安装
 
 ```bash
-git clone <repo-url> ~/MACS
-cd ~/MACS
-pip install -r requirements.txt
+# no need to download the SDK, we only need to code under uvc protocal
 
 # 首次运行配置向导（检测相机连接状态）
 python3 setup_check.py

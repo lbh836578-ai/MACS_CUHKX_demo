@@ -1,0 +1,175 @@
+import React from 'react';
+import {
+  ComposedChart, Bar, Line,
+  XAxis, YAxis, CartesianGrid,
+  Tooltip, Legend, ResponsiveContainer, Label,
+} from 'recharts';
+
+const data = [
+  { duration: '30 s',  manualTime: 2.8,  macsTime: 0.6,  manualAcc: 98.1, macsAcc: 97.9 },
+  { duration: '1 min', manualTime: 5.5,  macsTime: 3.2,  manualAcc: 97.5, macsAcc: 96.1 },
+  { duration: '3 min', manualTime: 16.2, macsTime: 10.8,  manualAcc: 96.5, macsAcc: 95.2 },
+];
+
+const CustomTooltip = ({ active, payload, label }) => {
+  if (!active || !payload) return null;
+  return (
+    <div style={{
+      background: '#fff', border: '1px solid #ccc',
+      borderRadius: 4, padding: '8px 12px', fontSize: 11,
+      fontFamily: 'Georgia, serif', lineHeight: 1.8,
+    }}>
+      <p style={{ fontWeight: 'bold', marginBottom: 4 }}>{label}</p>
+      {payload.map((p, i) => (
+        <p key={i} style={{ color: p.color }}>
+          {p.name}:{' '}
+          {p.name.includes('Acc')
+            ? `${p.value.toFixed(1)}%`
+            : `${p.value} min`}
+        </p>
+      ))}
+    </div>
+  );
+};
+
+export default function ComparisonChart() {
+  return (
+    <div style={{ fontFamily: 'Georgia, serif' }}
+      className="bg-white border border-gray-300 shadow-md rounded p-6 max-w-2xl mx-auto my-8">
+
+      <p className="text-center text-sm font-bold text-gray-800 mb-1">
+        Figure 2. Post-processing Time and Classification Accuracy
+      </p>
+      <p className="text-center text-xs text-gray-500 mb-4">
+        Manual Handling vs. MACS Automated Pipeline
+      </p>
+
+      {/* Legend manual */}
+      <div className="flex justify-center gap-6 mb-3 flex-wrap">
+        <span className="flex items-center gap-1 text-xs text-gray-600">
+          <span style={{ display:'inline-block', width:14, height:14, background:'#ef9a9a', borderRadius:2 }}/>
+          Manual — Time
+        </span>
+        <span className="flex items-center gap-1 text-xs text-gray-600">
+          <span style={{ display:'inline-block', width:14, height:14, background:'#90caf9', borderRadius:2 }}/>
+          MACS — Time
+        </span>
+        <span className="flex items-center gap-1 text-xs text-gray-600">
+          <svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="#c62828" strokeWidth="2.5" strokeDasharray="5 3"/><circle cx="11" cy="5" r="3.5" fill="#c62828"/></svg>
+          Manual — Accuracy
+        </span>
+        <span className="flex items-center gap-1 text-xs text-gray-600">
+          <svg width="22" height="10"><line x1="0" y1="5" x2="22" y2="5" stroke="#1565c0" strokeWidth="2.5"/><circle cx="11" cy="5" r="3.5" fill="#1565c0"/></svg>
+          MACS — Accuracy
+        </span>
+      </div>
+
+      <ResponsiveContainer width="100%" height={320}>
+        <ComposedChart
+          data={data}
+          margin={{ top: 10, right: 68, left: 58, bottom: 38 }}
+          barCategoryGap="30%"
+          barGap={4}
+        >
+          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+
+          <XAxis
+            dataKey="duration"
+            tick={{ fontSize: 11, fontFamily: 'Georgia, serif', fill: '#444' }}
+            axisLine={{ stroke: '#888' }}
+            tickLine={false}
+          >
+            <Label
+              value="Total Recording Duration"
+              position="insideBottom"
+              offset={-22}
+              style={{ fontSize: 11, fontFamily: 'Georgia, serif', fill: '#555' }}
+            />
+          </XAxis>
+
+          {/* LEFT Y — time */}
+          <YAxis
+            yAxisId="time"
+            orientation="left"
+            domain={[0, 20]}
+            ticks={[0, 4, 8, 12, 16, 20]}
+            tick={{ fontSize: 10, fontFamily: 'Georgia, serif', fill: '#555' }}
+            axisLine={{ stroke: '#888' }}
+            tickLine={false}
+          >
+            <Label
+              value="Post-processing Time (min)"
+              angle={-90}
+              position="insideLeft"
+              offset={-42}
+              style={{ fontSize: 10, fontFamily: 'Georgia, serif', fill: '#555', textAnchor: 'middle' }}
+            />
+          </YAxis>
+
+          {/* RIGHT Y — accuracy */}
+          <YAxis
+            yAxisId="acc"
+            orientation="right"
+            domain={[91, 97]}
+            ticks={[91, 92, 93, 94, 95, 96, 97]}
+            tick={{ fontSize: 10, fontFamily: 'Georgia, serif', fill: '#555' }}
+            tickFormatter={v => `${v}%`}
+            axisLine={{ stroke: '#888' }}
+            tickLine={false}
+          >
+            <Label
+              value="Classification Accuracy (%)"
+              angle={90}
+              position="insideRight"
+              offset={-48}
+              style={{ fontSize: 10, fontFamily: 'Georgia, serif', fill: '#555', textAnchor: 'middle' }}
+            />
+          </YAxis>
+
+          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
+
+          {/* Bars */}
+          <Bar yAxisId="time" dataKey="manualTime" name="Manual — Time"
+            fill="#ef9a9a" barSize={28} radius={[3,3,0,0]} />
+          <Bar yAxisId="time" dataKey="macsTime"   name="MACS — Time"
+            fill="#90caf9" barSize={28} radius={[3,3,0,0]} />
+
+          {/* Lines */}
+          <Line yAxisId="acc" type="linear" dataKey="manualAcc"
+            name="Manual — Acc"
+            stroke="#c62828" strokeWidth={2.5} strokeDasharray="6 3"
+            dot={{ r: 5, fill: '#c62828', stroke: '#fff', strokeWidth: 1.5 }}
+            activeDot={{ r: 6 }} legendType="none" />
+          <Line yAxisId="acc" type="linear" dataKey="macsAcc"
+            name="MACS — Acc"
+            stroke="#1565c0" strokeWidth={2.5}
+            dot={{ r: 5, fill: '#1565c0', stroke: '#fff', strokeWidth: 1.5 }}
+            activeDot={{ r: 6 }} legendType="none" />
+        </ComposedChart>
+      </ResponsiveContainer>
+
+      <!-- {/* annotation badges */}
+      <div className="flex justify-center gap-4 mt-1 mb-3 flex-wrap">
+        <span className="text-xs bg-red-50 border border-red-200 text-red-700 px-2 py-0.5 rounded">
+          Manual 4.7× slower @30 s
+        </span>
+        <span className="text-xs bg-red-50 border border-red-200 text-red-700 px-2 py-0.5 rounded">
+          Manual 1.7× slower @1 min
+        </span>
+        <span className="text-xs bg-red-50 border border-red-200 text-red-700 px-2 py-0.5 rounded">
+          Manual 1.5× slower @3 min
+        </span>
+      </div> -->
+
+      <!-- <hr className="border-gray-200 mb-3" />
+      <p className="text-xs text-gray-600 leading-relaxed">
+        <strong>Figure 2.</strong> Bars (left axis) show total post-processing time (labeling,
+        classification, file organization) for manual handling (red) vs. MACS automation (blue)
+        across three recording durations. Lines (right axis) show classification accuracy;
+        manual labeling retains a marginal accuracy advantage (Δ ≤ 0.2 pp at 30 s,
+        Δ ≤ 1.6 pp at 3 min), while MACS reduces post-processing time by ≈4.6× at all durations.
+        Values are mean estimates; empirical measurements will replace these in the final version.
+      </p> -->
+    </div>
+  );
+}
