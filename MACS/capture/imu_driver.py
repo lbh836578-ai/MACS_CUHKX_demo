@@ -74,6 +74,15 @@ def _parse_measurement_frame(frame):
     }
 
 
+def _format_exception(exc):
+    text = str(exc).strip()
+    if not text:
+        text = exc.__class__.__name__
+    if "org.bluez.Error.InProgress" in text:
+        text += " (Bluetooth adapter is already handling another connect/start operation)"
+    return text
+
+
 class _Wt901StreamParser:
     FRAME_LEN = 20
 
@@ -175,14 +184,18 @@ class _ImuSessionState:
 
 
 class _ImuDeviceRunner:
-    def __init__(self, driver, label, mac):
+    def __init__(self, driver, label, mac, initial_delay_s=0.0):
         self._driver = driver
         self._label = label
         self._mac = mac
+        self._initial_delay_s = max(0.0, float(initial_delay_s))
         self._parser = _Wt901StreamParser()
 
     async def run(self):
         first_attempt_done = False
+        if self._initial_delay_s > 0:
+            await asyncio.sleep(self._initial_delay_s)
+
         while not self._driver.stop_requested:
             disconnected = asyncio.Event()
             client = BleakClient(
@@ -191,31 +204,37 @@ class _ImuDeviceRunner:
                 disconnected_callback=lambda _client: disconnected.set(),
             )
             try:
-                await client.connect()
-                if not client.is_connected:
-                    raise RuntimeError("BLE connect returned without an active link")
+                self._driver.log(
+                    f"IMU connect attempt: {self._label} ({self._mac})"
+                )
+                async with self._driver.connect_lock:
+                    await client.connect()
+                    if not client.is_connected:
+                        raise RuntimeError(
+                            "BLE connect returned without an active link"
+                        )
+
+                    try:
+                        await client.write_gatt_char(
+                            self._driver.write_uuid,
+                            _rate_command(self._driver.sample_rate_hz),
+                            response=False,
+                        )
+                    except Exception as exc:
+                        self._driver.set_device_error(
+                            self._label,
+                            f"failed to set sample rate: {_format_exception(exc)}",
+                        )
+
+                    await client.start_notify(
+                        self._driver.notify_uuid,
+                        self._handle_notification,
+                    )
 
                 self._driver.set_device_connected(self._label, True)
                 self._driver.clear_device_error(self._label)
                 self._driver.mark_initial_attempt(self._label)
                 first_attempt_done = True
-
-                try:
-                    await client.write_gatt_char(
-                        self._driver.write_uuid,
-                        _rate_command(self._driver.sample_rate_hz),
-                        response=False,
-                    )
-                except Exception as exc:
-                    self._driver.set_device_error(
-                        self._label,
-                        f"failed to set sample rate: {exc}",
-                    )
-
-                await client.start_notify(
-                    self._driver.notify_uuid,
-                    self._handle_notification,
-                )
                 self._driver.log(
                     f"IMU connected: {self._label} ({self._mac})"
                 )
@@ -237,7 +256,10 @@ class _ImuDeviceRunner:
 
             except Exception as exc:
                 self._driver.set_device_connected(self._label, False)
-                self._driver.set_device_error(self._label, str(exc))
+                self._driver.set_device_error(
+                    self._label,
+                    _format_exception(exc),
+                )
                 if not first_attempt_done:
                     self._driver.mark_initial_attempt(self._label)
                     first_attempt_done = True
@@ -285,11 +307,13 @@ class ImuDriver:
         self.sample_rate_hz = int(self._cfg.get("sample_rate_hz", 50))
         self.connect_timeout_s = float(self._cfg.get("connect_timeout_s", 15.0))
         self.reconnect_delay_s = float(self._cfg.get("reconnect_delay_s", 3.0))
+        self.connect_stagger_s = float(self._cfg.get("connect_stagger_s", 1.0))
         self.initial_wait_s = float(self._cfg.get("ready_timeout_s", 8.0))
 
         self._thread = None
         self._loop = None
         self._async_stop = None
+        self._connect_lock = None
         self._stop_requested = False
         self._prepared = False
 
@@ -332,6 +356,10 @@ class ImuDriver:
     @property
     def stop_requested(self):
         return self._stop_requested
+
+    @property
+    def connect_lock(self):
+        return self._connect_lock
 
     def prepare(self):
         if not self._enabled:
@@ -466,6 +494,7 @@ class ImuDriver:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         self._async_stop = asyncio.Event()
+        self._connect_lock = asyncio.Lock()
         self._loop_ready.set()
         try:
             self._loop.run_until_complete(self._async_main())
@@ -477,8 +506,13 @@ class ImuDriver:
 
     async def _async_main(self):
         tasks = []
-        for device in self._devices:
-            runner = _ImuDeviceRunner(self, device["label"], device["mac"])
+        for idx, device in enumerate(self._devices):
+            runner = _ImuDeviceRunner(
+                self,
+                device["label"],
+                device["mac"],
+                initial_delay_s=idx * self.connect_stagger_s,
+            )
             tasks.append(asyncio.create_task(runner.run()))
 
         if not tasks:

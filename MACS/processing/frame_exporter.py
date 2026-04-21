@@ -22,7 +22,7 @@ Output hierarchy (per action)::
 
 import shutil
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union
 
 import cv2
 import numpy as np
@@ -38,7 +38,7 @@ class FrameExporter:
 
     def __init__(
         self,
-        output_root: str | Path,
+        output_root: Union[str, Path],
         config: Optional[dict] = None,
         progress_cb: Optional[Callable[[str, int, int], None]] = None,
     ):

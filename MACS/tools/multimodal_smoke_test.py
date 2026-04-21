@@ -10,15 +10,23 @@ coordinator that CaptureController uses in production.
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
 import yaml
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from capture.session_coordinator import SessionCoordinator
 
 
 def load_config(path):
+    path = Path(path)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
     with open(path, "r") as fh:
         return yaml.safe_load(fh) or {}
 
@@ -47,7 +55,11 @@ def main():
 
     cfg = load_config(args.config)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    session_dir = Path(args.output_root) / f"session_smoke_{stamp}"
+    output_root = Path(args.output_root)
+    if not output_root.is_absolute():
+        output_root = PROJECT_ROOT / output_root
+
+    session_dir = output_root / f"session_smoke_{stamp}"
     session_start_ns = time.time_ns()
 
     coordinator = SessionCoordinator(cfg, logger=lambda msg: print(msg))
