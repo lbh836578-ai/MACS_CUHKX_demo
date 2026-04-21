@@ -67,7 +67,7 @@ multimodal:
     connect_timeout_s: 15
     reconnect_delay_s: 3
     connect_stagger_s: 1.0
-    ready_timeout_s: 8
+    ready_timeout_s: 6
     notify_uuid: "0000ffe4-0000-1000-8000-00805f9a34fb"
     write_uuid: "0000ffe9-0000-1000-8000-00805f9a34fb"
     devices:
