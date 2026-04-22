@@ -51,6 +51,12 @@ def main():
         default="data/raw",
         help="Root directory for the smoke-test session",
     )
+    parser.add_argument(
+        "--imu-ready-timeout",
+        type=float,
+        default=0.0,
+        help="Wait for IMU initial connect attempts before recording; 0 disables the wait",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -60,12 +66,21 @@ def main():
         output_root = PROJECT_ROOT / output_root
 
     session_dir = output_root / f"session_smoke_{stamp}"
-    session_start_ns = time.time_ns()
 
     coordinator = SessionCoordinator(cfg, logger=lambda msg: print(msg))
     prepare_summary = coordinator.prepare()
     print(json.dumps(prepare_summary, indent=2))
 
+    if args.imu_ready_timeout > 0:
+        print(
+            "Waiting for IMU initial connect attempts "
+            f"(timeout={args.imu_ready_timeout:.1f}s)"
+        )
+        ready = coordinator.wait_for_imu_initial_attempts(args.imu_ready_timeout)
+        print(f"IMU initial attempts complete: {ready}")
+        print(json.dumps(coordinator.get_summary(), indent=2))
+
+    session_start_ns = time.time_ns()
     coordinator.start_session(session_dir, session_start_ns)
     print(f"Recording external modalities into {session_dir} for {args.duration}s")
 

@@ -303,6 +303,140 @@ async def diagnose_device(device, scan_index, notify_uuid, write_uuid, sample_ra
     return result
 
 
+async def diagnose_device_concurrent(device, scan_index, notify_uuid, write_uuid,
+                                     sample_rate_hz, connect_timeout_s,
+                                     notify_window_s, disconnect_wait_s,
+                                     connect_lock, initial_delay_s):
+    label = device["label"]
+    mac = normalise_mac(device["mac"])
+    result = {
+        "label": label,
+        "mac": mac,
+        "scan_seen": mac in scan_index,
+        "scan_name": None,
+        "scan_rssi": None,
+        "scan_details": None,
+        "service_uuids": [],
+        "characteristic_uuids": [],
+        "notify_properties": None,
+        "write_properties": None,
+        "connect_ok": False,
+        "services_ok": False,
+        "notify_char_found": False,
+        "write_char_found": False,
+        "write_ok": False,
+        "notify_ok": False,
+        "notification_callbacks": 0,
+        "measurement_frames": 0,
+        "raw_notify_bytes": 0,
+        "connect_elapsed_s": None,
+        "notify_window_s": notify_window_s,
+        "step_errors": [],
+        "error": None,
+    }
+
+    if result["scan_seen"]:
+        result.update({
+            "scan_name": scan_index[mac].get("name"),
+            "scan_rssi": scan_index[mac].get("rssi"),
+            "scan_details": scan_index[mac].get("details"),
+        })
+
+    if initial_delay_s > 0:
+        await asyncio.sleep(initial_delay_s)
+
+    probe = NotifyProbe()
+    client = BleakClient(mac, timeout=connect_timeout_s)
+    notify_started = False
+    start_ts = time.monotonic()
+
+    try:
+        print(f"[connect-concurrent] {label} {mac}")
+        async with connect_lock:
+            await client.connect()
+            result["connect_elapsed_s"] = round(time.monotonic() - start_ts, 3)
+            if not client.is_connected:
+                raise RuntimeError("BLE connect returned without an active link")
+            result["connect_ok"] = True
+
+            services = await resolve_services(client)
+            characteristics = {}
+            for service in services:
+                result["service_uuids"].append(service.uuid)
+                for characteristic in service.characteristics:
+                    characteristics[characteristic.uuid.lower()] = list(
+                        characteristic.properties
+                    )
+
+            result["characteristic_uuids"] = sorted(characteristics.keys())
+            notify_props = characteristics.get(notify_uuid.lower())
+            write_props = characteristics.get(write_uuid.lower())
+            result["notify_properties"] = notify_props
+            result["write_properties"] = write_props
+            result["notify_char_found"] = notify_props is not None
+            result["write_char_found"] = write_props is not None
+            result["services_ok"] = (
+                result["notify_char_found"] and result["write_char_found"]
+            )
+
+            if not result["services_ok"]:
+                missing = []
+                if not result["notify_char_found"]:
+                    missing.append(f"notify:{notify_uuid}")
+                if not result["write_char_found"]:
+                    missing.append(f"write:{write_uuid}")
+                message = "missing expected characteristics: " + ", ".join(missing)
+                result["step_errors"].append(message)
+                raise RuntimeError(message)
+
+            try:
+                await client.write_gatt_char(
+                    write_uuid,
+                    rate_command(sample_rate_hz),
+                    response=False,
+                )
+                result["write_ok"] = True
+            except Exception as exc:
+                message = "write_gatt_char failed: " + format_exception(exc)
+                result["step_errors"].append(message)
+                print(f"[warn]               {label} {message}")
+
+            await client.start_notify(notify_uuid, probe.handle)
+            notify_started = True
+
+        print(f"[hold]               {label} window={notify_window_s:.1f}s")
+        await asyncio.sleep(notify_window_s)
+        result["notification_callbacks"] = probe.callback_count
+        result["measurement_frames"] = probe.frame_count
+        result["raw_notify_bytes"] = probe.raw_bytes
+        result["notify_ok"] = probe.callback_count > 0 and probe.frame_count > 0
+        if not result["notify_ok"]:
+            result["step_errors"].append(
+                "notify started but no valid measurement frames were received"
+            )
+
+    except Exception as exc:
+        result["error"] = format_exception(exc)
+    finally:
+        if notify_started:
+            try:
+                await client.stop_notify(notify_uuid)
+            except Exception:
+                pass
+        try:
+            if client.is_connected:
+                await client.disconnect()
+        except Exception:
+            pass
+        if disconnect_wait_s > 0:
+            await asyncio.sleep(disconnect_wait_s)
+
+    if result["error"] is None and result["step_errors"]:
+        result["error"] = "; ".join(result["step_errors"])
+
+    return result
+
+
 async def async_main(args):
     if BleakClient is None or BleakScanner is None:
         raise RuntimeError("bleak is not installed; run pip install bleak")
@@ -321,28 +455,50 @@ async def async_main(args):
     scan_devices = await BleakScanner.discover(timeout=args.scan_seconds)
     scan_index = build_scan_index(scan_devices)
 
-    results = []
-    for device in devices:
-        results.append(
-            await diagnose_device(
-                device=device,
-                scan_index=scan_index,
-                notify_uuid=notify_uuid,
-                write_uuid=write_uuid,
-                sample_rate_hz=sample_rate_hz,
-                connect_timeout_s=connect_timeout_s,
-                notify_window_s=args.notify_seconds,
-                disconnect_wait_s=args.disconnect_wait,
+    if args.mode == "sequential":
+        results = []
+        for device in devices:
+            results.append(
+                await diagnose_device(
+                    device=device,
+                    scan_index=scan_index,
+                    notify_uuid=notify_uuid,
+                    write_uuid=write_uuid,
+                    sample_rate_hz=sample_rate_hz,
+                    connect_timeout_s=connect_timeout_s,
+                    notify_window_s=args.notify_seconds,
+                    disconnect_wait_s=args.disconnect_wait,
+                )
             )
-        )
+    else:
+        connect_lock = asyncio.Lock()
+        tasks = []
+        for idx, device in enumerate(devices):
+            tasks.append(asyncio.create_task(
+                diagnose_device_concurrent(
+                    device=device,
+                    scan_index=scan_index,
+                    notify_uuid=notify_uuid,
+                    write_uuid=write_uuid,
+                    sample_rate_hz=sample_rate_hz,
+                    connect_timeout_s=connect_timeout_s,
+                    notify_window_s=args.notify_seconds,
+                    disconnect_wait_s=args.disconnect_wait,
+                    connect_lock=connect_lock,
+                    initial_delay_s=idx * args.connect_stagger,
+                )
+            ))
+        results = await asyncio.gather(*tasks)
 
     ok_connect = sum(1 for item in results if item["connect_ok"])
     ok_notify = sum(1 for item in results if item["notify_ok"])
     summary = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": args.mode,
         "scan_seconds": args.scan_seconds,
         "notify_seconds": args.notify_seconds,
         "disconnect_wait": args.disconnect_wait,
+        "connect_stagger": args.connect_stagger,
         "connect_timeout_s": connect_timeout_s,
         "notify_uuid": notify_uuid,
         "write_uuid": write_uuid,
@@ -359,6 +515,12 @@ async def async_main(args):
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Standalone BLE diagnostics for configured WitMotion IMUs"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["sequential", "concurrent"],
+        default="sequential",
+        help="sequential: one device at a time; concurrent: connect all devices and hold notify simultaneously",
     )
     parser.add_argument(
         "--config",
@@ -388,6 +550,12 @@ def parse_args():
         type=float,
         default=1.0,
         help="Idle delay after disconnect before the next device",
+    )
+    parser.add_argument(
+        "--connect-stagger",
+        type=float,
+        default=1.0,
+        help="Per-device startup stagger used only in concurrent mode",
     )
     parser.add_argument(
         "--connect-timeout",

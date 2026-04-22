@@ -42,6 +42,11 @@ class SessionCoordinator:
             self._imu.start_session(session_dir, session_start_ns)
         return self.get_summary()
 
+    def wait_for_imu_initial_attempts(self, timeout_s=None):
+        if not self._imu.enabled:
+            return True
+        return self._imu.wait_until_initial_attempts_complete(timeout_s)
+
     def stop_session(self):
         if self._mmwave.enabled:
             self._mmwave.stop_session()

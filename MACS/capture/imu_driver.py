@@ -361,6 +361,9 @@ class ImuDriver:
     def connect_lock(self):
         return self._connect_lock
 
+    def wait_until_initial_attempts_complete(self, timeout_s=None):
+        return self._initial_attempts_done.wait(timeout=timeout_s)
+
     def prepare(self):
         if not self._enabled:
             return False
@@ -435,7 +438,13 @@ class ImuDriver:
     def get_summary(self):
         with self._state_lock:
             devices = []
+            connected_count = 0
+            attempted_count = 0
             for label, state in self._device_states.items():
+                if state["connected"]:
+                    connected_count += 1
+                if state["initial_attempted"]:
+                    attempted_count += 1
                 devices.append({
                     "label": label,
                     "mac": state["mac"],
@@ -443,6 +452,7 @@ class ImuDriver:
                     "samples_captured": self._last_session_counts.get(label, 0),
                     "last_seen_ns": state["last_seen_ns"],
                     "last_error": state["last_error"],
+                    "initial_attempted": state["initial_attempted"],
                 })
         return {
             "enabled": self._enabled,
@@ -453,6 +463,9 @@ class ImuDriver:
             "sample_rate_hz": self.sample_rate_hz,
             "notify_uuid": self.notify_uuid,
             "write_uuid": self.write_uuid,
+            "devices_total": len(self._device_states),
+            "devices_connected": connected_count,
+            "devices_initial_attempted": attempted_count,
             "error": self._last_error,
             "devices": devices,
         }
