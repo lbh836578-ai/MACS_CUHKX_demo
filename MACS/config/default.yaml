@@ -64,10 +64,12 @@ multimodal:
   imu:
     enabled: false
     sample_rate_hz: 50
-    connect_timeout_s: 15
+    connect_timeout_s: 20
     reconnect_delay_s: 3
-    connect_stagger_s: 1.0
-    ready_timeout_s: 6
+    connect_stagger_s: 2.0
+    scan_warmup_s: 10.0
+    retry_scan_s: 5.0
+    ready_timeout_s: 60
     notify_uuid: "0000ffe4-0000-1000-8000-00805f9a34fb"
     write_uuid: "0000ffe9-0000-1000-8000-00805f9a34fb"
     devices:

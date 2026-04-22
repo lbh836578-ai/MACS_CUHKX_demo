@@ -15,9 +15,10 @@ import time
 from pathlib import Path
 
 try:
-    from bleak import BleakClient
+    from bleak import BleakClient, BleakScanner
 except ImportError:
     BleakClient = None
+    BleakScanner = None
 
 
 NOTIFY_UUID = "0000ffe4-0000-1000-8000-00805f9a34fb"
@@ -35,6 +36,10 @@ SAMPLE_FIELDS = [
     "angle_y",
     "angle_z",
 ]
+
+
+def _normalise_mac(mac):
+    return (mac or "").strip().upper()
 
 
 def _signed_16(value):
@@ -198,11 +203,14 @@ class _ImuDeviceRunner:
 
         while not self._driver.stop_requested:
             disconnected = asyncio.Event()
+            target = self._driver.get_ble_target(self._mac)
+            self._driver.mark_connect_attempt(self._label)
             client = BleakClient(
-                self._mac,
+                target,
                 timeout=self._driver.connect_timeout_s,
                 disconnected_callback=lambda _client: disconnected.set(),
             )
+            was_connected = False
             try:
                 self._driver.log(
                     f"IMU connect attempt: {self._label} ({self._mac})"
@@ -232,9 +240,11 @@ class _ImuDeviceRunner:
                     )
 
                 self._driver.set_device_connected(self._label, True)
+                self._driver.mark_connect_success(self._label)
                 self._driver.clear_device_error(self._label)
                 self._driver.mark_initial_attempt(self._label)
                 first_attempt_done = True
+                was_connected = True
                 self._driver.log(
                     f"IMU connected: {self._label} ({self._mac})"
                 )
@@ -255,16 +265,19 @@ class _ImuDeviceRunner:
                     )
 
             except Exception as exc:
+                formatted_error = _format_exception(exc)
                 self._driver.set_device_connected(self._label, False)
                 self._driver.set_device_error(
                     self._label,
-                    _format_exception(exc),
+                    formatted_error,
                 )
                 if not first_attempt_done:
                     self._driver.mark_initial_attempt(self._label)
                     first_attempt_done = True
                 if self._driver.stop_requested:
                     break
+                if self._driver.should_refresh_scan(formatted_error):
+                    await self._driver.refresh_scan_cache(self._driver.retry_scan_s)
                 await asyncio.sleep(self._driver.reconnect_delay_s)
             finally:
                 try:
@@ -277,6 +290,8 @@ class _ImuDeviceRunner:
                         await client.disconnect()
                 except Exception:
                     pass
+                if was_connected:
+                    self._driver.mark_disconnect(self._label)
                 self._driver.set_device_connected(self._label, False)
 
     def _handle_notification(self, _sender, data):
@@ -305,10 +320,12 @@ class ImuDriver:
         self.notify_uuid = self._cfg.get("notify_uuid", NOTIFY_UUID)
         self.write_uuid = self._cfg.get("write_uuid", WRITE_UUID)
         self.sample_rate_hz = int(self._cfg.get("sample_rate_hz", 50))
-        self.connect_timeout_s = float(self._cfg.get("connect_timeout_s", 15.0))
+        self.connect_timeout_s = float(self._cfg.get("connect_timeout_s", 20.0))
         self.reconnect_delay_s = float(self._cfg.get("reconnect_delay_s", 3.0))
-        self.connect_stagger_s = float(self._cfg.get("connect_stagger_s", 1.0))
-        self.initial_wait_s = float(self._cfg.get("ready_timeout_s", 8.0))
+        self.connect_stagger_s = float(self._cfg.get("connect_stagger_s", 2.0))
+        self.scan_warmup_s = float(self._cfg.get("scan_warmup_s", 10.0))
+        self.retry_scan_s = float(self._cfg.get("retry_scan_s", 5.0))
+        self.initial_wait_s = float(self._cfg.get("ready_timeout_s", 60.0))
 
         self._thread = None
         self._loop = None
@@ -316,6 +333,9 @@ class ImuDriver:
         self._connect_lock = None
         self._stop_requested = False
         self._prepared = False
+        self._discovered_devices = {}
+        self._last_scan_ns = None
+        self._last_scan_count = 0
 
         self._loop_ready = threading.Event()
         self._initial_attempts_done = threading.Event()
@@ -328,6 +348,12 @@ class ImuDriver:
                 "last_seen_ns": None,
                 "last_error": None,
                 "initial_attempted": False,
+                "connect_attempts": 0,
+                "connect_successes": 0,
+                "disconnect_count": 0,
+                "last_connect_start_ns": None,
+                "last_connect_success_ns": None,
+                "last_disconnect_ns": None,
             }
             for device in self._devices
         }
@@ -363,6 +389,20 @@ class ImuDriver:
 
     def wait_until_initial_attempts_complete(self, timeout_s=None):
         return self._initial_attempts_done.wait(timeout=timeout_s)
+
+    def get_ble_target(self, mac):
+        return self._discovered_devices.get(_normalise_mac(mac), mac)
+
+    def should_refresh_scan(self, error_text):
+        if BleakScanner is None:
+            return False
+        if self.retry_scan_s <= 0:
+            return False
+        return (
+            "TimeoutError" in error_text
+            or "not found" in error_text.lower()
+            or "No matching connection" in error_text
+        )
 
     def prepare(self):
         if not self._enabled:
@@ -453,6 +493,12 @@ class ImuDriver:
                     "last_seen_ns": state["last_seen_ns"],
                     "last_error": state["last_error"],
                     "initial_attempted": state["initial_attempted"],
+                    "connect_attempts": state["connect_attempts"],
+                    "connect_successes": state["connect_successes"],
+                    "disconnect_count": state["disconnect_count"],
+                    "last_connect_start_ns": state["last_connect_start_ns"],
+                    "last_connect_success_ns": state["last_connect_success_ns"],
+                    "last_disconnect_ns": state["last_disconnect_ns"],
                 })
         return {
             "enabled": self._enabled,
@@ -466,6 +512,10 @@ class ImuDriver:
             "devices_total": len(self._device_states),
             "devices_connected": connected_count,
             "devices_initial_attempted": attempted_count,
+            "scan_warmup_s": self.scan_warmup_s,
+            "retry_scan_s": self.retry_scan_s,
+            "last_scan_ns": self._last_scan_ns,
+            "scan_cache_size": self._last_scan_count,
             "error": self._last_error,
             "devices": devices,
         }
@@ -483,6 +533,24 @@ class ImuDriver:
     def clear_device_error(self, label):
         with self._state_lock:
             self._device_states[label]["last_error"] = None
+
+    def mark_connect_attempt(self, label):
+        with self._state_lock:
+            state = self._device_states[label]
+            state["connect_attempts"] += 1
+            state["last_connect_start_ns"] = time.time_ns()
+
+    def mark_connect_success(self, label):
+        with self._state_lock:
+            state = self._device_states[label]
+            state["connect_successes"] += 1
+            state["last_connect_success_ns"] = time.time_ns()
+
+    def mark_disconnect(self, label):
+        with self._state_lock:
+            state = self._device_states[label]
+            state["disconnect_count"] += 1
+            state["last_disconnect_ns"] = time.time_ns()
 
     def increment_sample_count(self, label, timestamp_ns):
         with self._state_lock:
@@ -518,6 +586,8 @@ class ImuDriver:
                 pass
 
     async def _async_main(self):
+        await self.refresh_scan_cache(self.scan_warmup_s)
+
         tasks = []
         for idx, device in enumerate(self._devices):
             runner = _ImuDeviceRunner(
@@ -535,12 +605,37 @@ class ImuDriver:
 
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def refresh_scan_cache(self, timeout_s=None):
+        timeout_s = float(self.scan_warmup_s if timeout_s is None else timeout_s)
+        if BleakScanner is None or timeout_s <= 0:
+            return 0
+
+        async with self._connect_lock:
+            try:
+                self.log(f"IMU scan start: {timeout_s:.1f}s")
+                devices = await BleakScanner.discover(timeout=timeout_s)
+                indexed = {}
+                for device in devices:
+                    mac = _normalise_mac(getattr(device, "address", ""))
+                    if mac:
+                        indexed[mac] = device
+                self._discovered_devices = indexed
+                self._last_scan_ns = time.time_ns()
+                self._last_scan_count = len(indexed)
+                self.log(
+                    f"IMU scan complete: cached {self._last_scan_count} device(s)"
+                )
+                return self._last_scan_count
+            except Exception as exc:
+                self.log(f"IMU scan failed: {_format_exception(exc)}")
+                return 0
+
     @staticmethod
     def _normalise_devices(devices):
         normalised = []
         for idx, item in enumerate(devices, start=1):
             label = item.get("label") or f"imu{idx:02d}"
-            mac = (item.get("mac") or "").strip()
+            mac = _normalise_mac(item.get("mac"))
             if not mac:
                 continue
             normalised.append({"label": label, "mac": mac})
