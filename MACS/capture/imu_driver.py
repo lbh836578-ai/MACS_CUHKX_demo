@@ -211,6 +211,8 @@ class _ImuDeviceRunner:
                 disconnected_callback=lambda _client: disconnected.set(),
             )
             was_connected = False
+            failure_stage = "connect"
+            disconnect_reason = None
             try:
                 self._driver.log(
                     f"IMU connect attempt: {self._label} ({self._mac})"
@@ -222,21 +224,34 @@ class _ImuDeviceRunner:
                             "BLE connect returned without an active link"
                         )
 
+                    failure_stage = "write_gatt_char"
                     try:
                         await client.write_gatt_char(
                             self._driver.write_uuid,
                             _rate_command(self._driver.sample_rate_hz),
                             response=False,
                         )
+                        self._driver.record_device_event(
+                            self._label,
+                            "write_gatt_char",
+                            "success",
+                        )
                     except Exception as exc:
                         self._driver.set_device_error(
                             self._label,
                             f"failed to set sample rate: {_format_exception(exc)}",
+                            stage="write_gatt_char",
                         )
 
+                    failure_stage = "start_notify"
                     await client.start_notify(
                         self._driver.notify_uuid,
                         self._handle_notification,
+                    )
+                    self._driver.record_device_event(
+                        self._label,
+                        "start_notify",
+                        "success",
                     )
 
                 self._driver.set_device_connected(self._label, True)
@@ -259,9 +274,11 @@ class _ImuDeviceRunner:
                     task.cancel()
 
                 if drop_task in done and not self._driver.stop_requested:
+                    disconnect_reason = "device disconnected unexpectedly"
                     self._driver.set_device_error(
                         self._label,
-                        "device disconnected unexpectedly",
+                        disconnect_reason,
+                        stage="notify_stream",
                     )
 
             except Exception as exc:
@@ -270,6 +287,7 @@ class _ImuDeviceRunner:
                 self._driver.set_device_error(
                     self._label,
                     formatted_error,
+                    stage=failure_stage,
                 )
                 if not first_attempt_done:
                     self._driver.mark_initial_attempt(self._label)
@@ -291,7 +309,9 @@ class _ImuDeviceRunner:
                 except Exception:
                     pass
                 if was_connected:
-                    self._driver.mark_disconnect(self._label)
+                    if disconnect_reason is None:
+                        disconnect_reason = "shutdown" if self._driver.stop_requested else "connection closed"
+                    self._driver.mark_disconnect(self._label, disconnect_reason)
                 self._driver.set_device_connected(self._label, False)
 
     def _handle_notification(self, _sender, data):
@@ -300,6 +320,7 @@ class _ImuDeviceRunner:
             if parsed is None:
                 continue
             timestamp_ns = time.time_ns()
+            self._driver.mark_notify_received(self._label, timestamp_ns)
             if self._driver.session_state.write_sample(
                 self._label,
                 timestamp_ns,
@@ -347,6 +368,8 @@ class ImuDriver:
                 "samples_captured": 0,
                 "last_seen_ns": None,
                 "last_error": None,
+                "last_failure_stage": None,
+                "last_disconnect_reason": None,
                 "initial_attempted": False,
                 "connect_attempts": 0,
                 "connect_successes": 0,
@@ -354,6 +377,13 @@ class ImuDriver:
                 "last_connect_start_ns": None,
                 "last_connect_success_ns": None,
                 "last_disconnect_ns": None,
+                "last_notify_ns": None,
+                "last_notify_before_disconnect_ns": None,
+                "last_first_notify_ns": None,
+                "last_first_notify_latency_ms": None,
+                "awaiting_first_notify": False,
+                "current_connection_last_notify_ns": None,
+                "recent_events": [],
             }
             for device in self._devices
         }
@@ -440,8 +470,18 @@ class ImuDriver:
         out_dir = Path(session_dir) / "imu"
         self._session_state.activate(out_dir, session_start_ns)
         with self._state_lock:
-            for state in self._device_states.values():
+            for label, state in self._device_states.items():
                 state["samples_captured"] = 0
+                self._append_event_locked(
+                    state,
+                    "session",
+                    "armed",
+                    {
+                        "session_start_ns": int(session_start_ns),
+                        "session_dir": str(out_dir),
+                        "label": label,
+                    },
+                )
         self.log(f"IMU armed for session: {out_dir}")
         return True
 
@@ -451,6 +491,18 @@ class ImuDriver:
         counts, session_dir = self._session_state.deactivate()
         self._last_session_counts = counts
         self._last_session_dir = session_dir
+        with self._state_lock:
+            for label, state in self._device_states.items():
+                self._append_event_locked(
+                    state,
+                    "session",
+                    "stopped",
+                    {
+                        "samples_captured": counts.get(label, 0),
+                        "session_dir": session_dir,
+                        "label": label,
+                    },
+                )
         return self.get_summary()
 
     def discard_session(self):
@@ -492,6 +544,8 @@ class ImuDriver:
                     "samples_captured": self._last_session_counts.get(label, 0),
                     "last_seen_ns": state["last_seen_ns"],
                     "last_error": state["last_error"],
+                    "last_failure_stage": state["last_failure_stage"],
+                    "last_disconnect_reason": state["last_disconnect_reason"],
                     "initial_attempted": state["initial_attempted"],
                     "connect_attempts": state["connect_attempts"],
                     "connect_successes": state["connect_successes"],
@@ -499,6 +553,11 @@ class ImuDriver:
                     "last_connect_start_ns": state["last_connect_start_ns"],
                     "last_connect_success_ns": state["last_connect_success_ns"],
                     "last_disconnect_ns": state["last_disconnect_ns"],
+                    "last_notify_ns": state["last_notify_ns"],
+                    "last_notify_before_disconnect_ns": state["last_notify_before_disconnect_ns"],
+                    "last_first_notify_ns": state["last_first_notify_ns"],
+                    "last_first_notify_latency_ms": state["last_first_notify_latency_ms"],
+                    "recent_events": list(state["recent_events"]),
                 })
         return {
             "enabled": self._enabled,
@@ -525,32 +584,125 @@ class ImuDriver:
             state = self._device_states[label]
             state["connected"] = connected
 
-    def set_device_error(self, label, error):
+    def set_device_error(self, label, error, stage=None):
         with self._state_lock:
-            self._device_states[label]["last_error"] = error
+            state = self._device_states[label]
+            state["last_error"] = error
+            if stage is not None:
+                state["last_failure_stage"] = stage
+            self._append_event_locked(
+                state,
+                stage or "runtime",
+                "error",
+                {
+                    "error": error,
+                    "attempt": state["connect_attempts"],
+                },
+            )
         self.log(f"IMU {label}: {error}")
 
     def clear_device_error(self, label):
         with self._state_lock:
             self._device_states[label]["last_error"] = None
 
+    def record_device_event(self, label, stage, event, extra=None, ts_ns=None):
+        with self._state_lock:
+            state = self._device_states[label]
+            self._append_event_locked(state, stage, event, extra, ts_ns)
+
+    def _append_event_locked(self, state, stage, event, extra=None, ts_ns=None):
+        payload = {
+            "ts_ns": int(time.time_ns() if ts_ns is None else ts_ns),
+            "stage": stage,
+            "event": event,
+        }
+        if extra:
+            payload.update(extra)
+        state["recent_events"].append(payload)
+        if len(state["recent_events"]) > 25:
+            del state["recent_events"][:-25]
+
     def mark_connect_attempt(self, label):
         with self._state_lock:
             state = self._device_states[label]
             state["connect_attempts"] += 1
-            state["last_connect_start_ns"] = time.time_ns()
+            now_ns = time.time_ns()
+            state["last_connect_start_ns"] = now_ns
+            state["awaiting_first_notify"] = False
+            state["current_connection_last_notify_ns"] = None
+            self._append_event_locked(
+                state,
+                "connect",
+                "attempt",
+                {"attempt": state["connect_attempts"]},
+                now_ns,
+            )
 
     def mark_connect_success(self, label):
         with self._state_lock:
             state = self._device_states[label]
             state["connect_successes"] += 1
-            state["last_connect_success_ns"] = time.time_ns()
+            now_ns = time.time_ns()
+            state["last_connect_success_ns"] = now_ns
+            state["last_failure_stage"] = None
+            state["awaiting_first_notify"] = True
+            state["current_connection_last_notify_ns"] = None
+            state["last_first_notify_ns"] = None
+            state["last_first_notify_latency_ms"] = None
+            self._append_event_locked(
+                state,
+                "connect",
+                "success",
+                {"attempt": state["connect_attempts"]},
+                now_ns,
+            )
 
-    def mark_disconnect(self, label):
+    def mark_disconnect(self, label, reason=None):
         with self._state_lock:
             state = self._device_states[label]
             state["disconnect_count"] += 1
-            state["last_disconnect_ns"] = time.time_ns()
+            now_ns = time.time_ns()
+            state["last_disconnect_ns"] = now_ns
+            state["last_disconnect_reason"] = reason
+            state["last_notify_before_disconnect_ns"] = state["current_connection_last_notify_ns"]
+            state["awaiting_first_notify"] = False
+            state["current_connection_last_notify_ns"] = None
+            self._append_event_locked(
+                state,
+                "disconnect",
+                "closed",
+                {
+                    "reason": reason,
+                    "last_notify_before_disconnect_ns": state["last_notify_before_disconnect_ns"],
+                },
+                now_ns,
+            )
+
+    def mark_notify_received(self, label, timestamp_ns):
+        with self._state_lock:
+            state = self._device_states[label]
+            state["last_notify_ns"] = timestamp_ns
+            state["current_connection_last_notify_ns"] = timestamp_ns
+            if state["awaiting_first_notify"]:
+                state["awaiting_first_notify"] = False
+                state["last_first_notify_ns"] = timestamp_ns
+                latency_ms = None
+                if state["last_connect_success_ns"] is not None:
+                    latency_ms = round(
+                        (timestamp_ns - state["last_connect_success_ns"]) / 1_000_000.0,
+                        3,
+                    )
+                state["last_first_notify_latency_ms"] = latency_ms
+                self._append_event_locked(
+                    state,
+                    "notify",
+                    "first_frame",
+                    {
+                        "attempt": state["connect_attempts"],
+                        "latency_ms": latency_ms,
+                    },
+                    timestamp_ns,
+                )
 
     def increment_sample_count(self, label, timestamp_ns):
         with self._state_lock:
