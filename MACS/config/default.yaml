@@ -50,7 +50,7 @@ ui:
 
 multimodal:
   mmwave:
-    enabled: false
+    enabled: true
     cli_port: "/dev/ttyUSB0"
     data_port: "/dev/ttyUSB1"
     cli_baudrate: 115200
@@ -62,7 +62,7 @@ multimodal:
     config_path: "config/profile_human.cfg"
 
   imu:
-    enabled: false
+    enabled: true
     sample_rate_hz: 50
     connect_timeout_s: 20
     reconnect_delay_s: 3
