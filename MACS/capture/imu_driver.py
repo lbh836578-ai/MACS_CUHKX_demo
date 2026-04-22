@@ -10,6 +10,7 @@ because a single callback can contain fragmented or concatenated WT901 packets.
 
 import asyncio
 import csv
+import queue
 import threading
 import time
 from pathlib import Path
@@ -120,6 +121,8 @@ class _Wt901StreamParser:
 
 
 class _ImuSessionState:
+    STOP_SENTINEL = object()
+
     def __init__(self, labels):
         self._labels = list(labels)
         self._lock = threading.Lock()
@@ -128,14 +131,17 @@ class _ImuSessionState:
         self._session_start_ns = 0
         self._files = {}
         self._writers = {}
+        self._row_queue = None
+        self._writer_thread = None
         self._sample_counts = {label: 0 for label in self._labels}
 
     def activate(self, output_dir, session_start_ns):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        self.deactivate()
+
         with self._lock:
-            self._close_locked()
             self._session_dir = output_dir
             self._session_start_ns = int(session_start_ns)
             self._sample_counts = {label: 0 for label in self._labels}
@@ -148,9 +154,30 @@ class _ImuSessionState:
                 self._files[label] = handle
                 self._writers[label] = writer
 
+            self._row_queue = queue.Queue()
             self._active = True
+            self._writer_thread = threading.Thread(
+                target=self._writer_loop,
+                args=(self._row_queue,),
+                daemon=True,
+            )
+            self._writer_thread.start()
 
     def deactivate(self):
+        row_queue = None
+        writer_thread = None
+        with self._lock:
+            row_queue = self._row_queue
+            writer_thread = self._writer_thread
+            self._active = False
+            self._row_queue = None
+            self._writer_thread = None
+
+        if row_queue is not None:
+            row_queue.put(self.STOP_SENTINEL)
+        if writer_thread is not None:
+            writer_thread.join(timeout=5)
+
         with self._lock:
             counts = dict(self._sample_counts)
             session_dir = str(self._session_dir) if self._session_dir else None
@@ -163,15 +190,17 @@ class _ImuSessionState:
                 return False
             if timestamp_ns < self._session_start_ns:
                 return False
-            writer = self._writers.get(label)
-            if writer is None:
+            if label not in self._writers:
+                return False
+            row_queue = self._row_queue
+            if row_queue is None:
                 return False
 
             row = {"timestamp_ns": timestamp_ns}
             row.update(sample)
-            writer.writerow(row)
-            self._sample_counts[label] += 1
-            return True
+
+        row_queue.put((label, row))
+        return True
 
     def _close_locked(self):
         self._active = False
@@ -186,6 +215,22 @@ class _ImuSessionState:
                 pass
         self._files = {}
         self._writers = {}
+        self._session_dir = None
+        self._session_start_ns = 0
+
+    def _writer_loop(self, row_queue):
+        while True:
+            item = row_queue.get()
+            if item is self.STOP_SENTINEL:
+                break
+
+            label, row = item
+            with self._lock:
+                writer = self._writers.get(label)
+                if writer is None:
+                    continue
+                writer.writerow(row)
+                self._sample_counts[label] += 1
 
 
 class _ImuDeviceRunner:
