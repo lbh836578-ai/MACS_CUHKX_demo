@@ -15,6 +15,8 @@ import threading
 import time
 from pathlib import Path
 
+from runtime_config import resolve_enabled_imu_devices
+
 try:
     from bleak import BleakClient, BleakScanner
 except ImportError:
@@ -382,7 +384,9 @@ class ImuDriver:
         self._log_fn = logger
 
         self._enabled = bool(self._cfg.get("enabled", False))
-        self._devices = self._normalise_devices(self._cfg.get("devices", []))
+        self._configured_device_count = len(self._cfg.get("devices", []))
+        self._devices = self._normalise_devices(self._cfg)
+        self._active_device_labels = [device["label"] for device in self._devices]
         self.notify_uuid = self._cfg.get("notify_uuid", NOTIFY_UUID)
         self.write_uuid = self._cfg.get("write_uuid", WRITE_UUID)
         self.sample_rate_hz = int(self._cfg.get("sample_rate_hz", 50))
@@ -402,6 +406,7 @@ class ImuDriver:
         self._discovered_devices = {}
         self._last_scan_ns = None
         self._last_scan_count = 0
+        self._scan_visible_labels = []
 
         self._loop_ready = threading.Event()
         self._initial_attempts_done = threading.Event()
@@ -489,8 +494,12 @@ class ImuDriver:
             self.log("IMU disabled: bleak is not installed")
             return False
         if not self._devices:
-            self._last_error = "no IMU devices configured"
-            self.log("IMU enabled but no devices are configured")
+            if self._configured_device_count:
+                self._last_error = "no IMU devices enabled after applying filters"
+                self.log("IMU enabled but no devices remain after enabled/active filtering")
+            else:
+                self._last_error = "no IMU devices configured"
+                self.log("IMU enabled but no devices are configured")
             return False
 
         self._stop_requested = False
@@ -504,8 +513,9 @@ class ImuDriver:
 
         self._prepared = True
         self._initial_attempts_done.wait(timeout=self.initial_wait_s)
+        labels_text = ", ".join(self._active_device_labels) or "--"
         self.log(
-            f"IMU prepare complete for {len(self._devices)} configured device(s)"
+            f"IMU prepare complete for {len(self._devices)} configured device(s): {labels_text}"
         )
         return True
 
@@ -613,6 +623,9 @@ class ImuDriver:
             "sample_rate_hz": self.sample_rate_hz,
             "notify_uuid": self.notify_uuid,
             "write_uuid": self.write_uuid,
+            "configured_devices_total": self._configured_device_count,
+            "active_devices": list(self._active_device_labels),
+            "scan_visible_devices": list(self._scan_visible_labels),
             "devices_total": len(self._device_states),
             "devices_connected": connected_count,
             "devices_initial_attempted": attempted_count,
@@ -817,23 +830,35 @@ class ImuDriver:
                     if mac:
                         indexed[mac] = device
                 self._discovered_devices = indexed
+                visible_labels = [
+                    device["label"] for device in self._devices
+                    if device["mac"] in indexed
+                ]
+                self._scan_visible_labels = visible_labels
                 self._last_scan_ns = time.time_ns()
                 self._last_scan_count = len(indexed)
                 self.log(
                     f"IMU scan complete: cached {self._last_scan_count} device(s)"
                 )
+                if visible_labels:
+                    self.log(
+                        "IMU scan matched configured devices: "
+                        + ", ".join(visible_labels)
+                    )
+                else:
+                    self.log("IMU scan matched no configured devices")
                 return self._last_scan_count
             except Exception as exc:
+                self._scan_visible_labels = []
                 self.log(f"IMU scan failed: {_format_exception(exc)}")
                 return 0
 
     @staticmethod
-    def _normalise_devices(devices):
+    def _normalise_devices(config):
         normalised = []
-        for idx, item in enumerate(devices, start=1):
-            label = item.get("label") or f"imu{idx:02d}"
-            mac = _normalise_mac(item.get("mac"))
-            if not mac:
-                continue
-            normalised.append({"label": label, "mac": mac})
+        for item in resolve_enabled_imu_devices(config):
+            normalised.append({
+                "label": item["label"],
+                "mac": _normalise_mac(item["mac"]),
+            })
         return normalised

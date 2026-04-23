@@ -138,6 +138,7 @@ class CaptureController(QObject):
             self._tb_driver.start()
 
         summary = self._session_coordinator.prepare()
+        self._sync_external_status(summary, log_inventory=True)
         for name, info in summary.get("modalities", {}).items():
             if not info.get("enabled"):
                 continue
@@ -315,6 +316,32 @@ class CaptureController(QObject):
         # Health monitor tick
         level = self._health.tick(fps_values, drift)
         sp.update_health(level.name)
+
+        self._sync_external_status(self._session_coordinator.get_summary())
+
+    def _sync_external_status(self, summary, log_inventory=False):
+        modalities = (summary or {}).get("modalities", {})
+        imu_info = modalities.get("imu") or {}
+        self._win.status_panel.update_imu(imu_info)
+
+        if not log_inventory or not imu_info.get("enabled"):
+            return
+
+        active = list(imu_info.get("active_devices") or [])
+        visible = list(imu_info.get("scan_visible_devices") or [])
+        connected = [
+            item["label"] for item in imu_info.get("devices", [])
+            if item.get("connected")
+        ]
+
+        if active:
+            self._log("IMU configured devices: " + ", ".join(active))
+        if visible:
+            self._log("IMU scan visible devices: " + ", ".join(visible))
+        elif imu_info.get("last_scan_ns"):
+            self._log("IMU scan visible devices: none matched from config")
+        if connected:
+            self._log("IMU connected devices: " + ", ".join(connected))
 
     # ================================================================
     # Error handling

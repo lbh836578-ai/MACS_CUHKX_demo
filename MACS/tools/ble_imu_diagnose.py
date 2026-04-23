@@ -27,6 +27,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from runtime_config import apply_runtime_imu_selection, resolve_enabled_imu_devices
+
 try:
     from bleak import BleakClient, BleakScanner
 except ImportError:
@@ -132,18 +134,15 @@ class NotifyProbe:
 
 
 def extract_imu_devices(config, selected_labels):
+    apply_runtime_imu_selection(config, selected_labels)
     imu_cfg = ((config or {}).get("multimodal") or {}).get("imu") or {}
-    wanted = {label.strip() for label in selected_labels if label.strip()}
     devices = []
 
-    for index, item in enumerate(imu_cfg.get("devices", []), start=1):
-        label = item.get("label") or f"imu{index:02d}"
-        if wanted and label not in wanted:
-            continue
-        mac = normalise_mac(item.get("mac"))
-        if not mac:
-            continue
-        devices.append({"label": label, "mac": mac})
+    for item in resolve_enabled_imu_devices(imu_cfg):
+        devices.append({
+            "label": item["label"],
+            "mac": normalise_mac(item["mac"]),
+        })
 
     return imu_cfg, devices
 

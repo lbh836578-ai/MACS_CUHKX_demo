@@ -9,6 +9,7 @@ Usage
     python3 main.py                       # production (real cameras)
     python3 main.py --demo                # synthetic frames, no hardware
     python3 main.py --config path.yaml    # custom config
+    python3 main.py --imu-device imu03_waist --imu-device imu04_left_ankle
 """
 
 import sys
@@ -16,6 +17,8 @@ import os
 import argparse
 
 import numpy as np
+
+from runtime_config import apply_runtime_imu_selection
 
 # ---------------------------------------------------------------------------
 # Guard against opencv-python hijacking Qt's platform plugin path.
@@ -146,9 +149,16 @@ def main():
         "--config", type=str, default="config/default.yaml",
         help="Path to YAML configuration file",
     )
+    parser.add_argument(
+        "--imu-device",
+        action="append",
+        default=[],
+        help="Only enable the named IMU label; repeat to keep multiple labels",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
+    apply_runtime_imu_selection(config, args.imu_device)
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")

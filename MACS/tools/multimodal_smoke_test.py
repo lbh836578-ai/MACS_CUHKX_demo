@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from capture.session_coordinator import SessionCoordinator
+from runtime_config import apply_runtime_imu_selection
 
 
 def load_config(path):
@@ -57,9 +58,16 @@ def main():
         default=0.0,
         help="Wait for IMU initial connect attempts before recording; 0 disables the wait",
     )
+    parser.add_argument(
+        "--imu-device",
+        action="append",
+        default=[],
+        help="Only enable the named IMU label; repeat to keep multiple labels",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    apply_runtime_imu_selection(cfg, args.imu_device)
     stamp = time.strftime("%Y%m%d_%H%M%S")
     output_root = Path(args.output_root)
     if not output_root.is_absolute():

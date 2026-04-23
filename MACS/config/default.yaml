@@ -73,14 +73,20 @@ multimodal:
     ready_timeout_s: 60
     notify_uuid: "0000ffe4-0000-1000-8000-00805f9a34fb"
     write_uuid: "0000ffe9-0000-1000-8000-00805f9a34fb"
+    active_devices: []
     devices:
       - label: "imu01_left_wrist"
         mac: "DC:E1:B0:1F:67:6E"
+        enabled: true
       - label: "imu02_right_wrist"
         mac: "E5:9E:9B:1F:CE:48"
+        enabled: true
       - label: "imu03_waist"
         mac: "C4:80:F9:46:D1:94"
+        enabled: true
       - label: "imu04_left_ankle"
         mac: "D2:5B:8F:2B:49:EE"
+        enabled: true
       - label: "imu05_right_ankle"
         mac: "F7:C5:A7:64:8A:09"
+        enabled: true

@@ -40,9 +40,10 @@ class StatusPanel(QWidget):
 
         self._fps_lbl    = self._make_label(mono, layout)
         self._sync_lbl   = self._make_label(mono, layout)
+        self._imu_lbl    = self._make_label(mono, layout, stretch=1)
         self._disk_lbl   = self._make_label(mono, layout)
         self._health_lbl = self._make_label(mono, layout)
-        self._timer_lbl  = self._make_label(mono, layout, stretch=1,
+        self._timer_lbl  = self._make_label(mono, layout,
                                              align=Qt.AlignRight | Qt.AlignVCenter)
 
         self.reset()
@@ -111,6 +112,56 @@ class StatusPanel(QWidget):
             f"font-size: 11px; color: {c}; font-weight: bold;"
         )
 
+    def update_imu(self, info=None):
+        info = info or {}
+        if not info.get("enabled"):
+            self._imu_lbl.setText("IMU --")
+            self._imu_lbl.setStyleSheet(self._LABEL_STYLE)
+            self._imu_lbl.setToolTip("")
+            return
+
+        active = list(info.get("active_devices") or [])
+        visible = list(info.get("scan_visible_devices") or [])
+        devices = list(info.get("devices") or [])
+        connected = [item["label"] for item in devices if item.get("connected")]
+        total = int(info.get("devices_total") or len(active) or 0)
+        error = info.get("error")
+
+        color = "#AAAAAA"
+        names = active
+        state = "target"
+        if connected:
+            names = connected
+            state = "online"
+            color = "#4CAF50" if len(connected) == total else "#FF9800"
+        elif visible:
+            names = visible
+            state = "visible"
+            color = "#29B6F6"
+        elif error:
+            color = "#F44336"
+            state = "error"
+
+        summary = self._summarise_names(names)
+        prefix = f"IMU {len(connected)}/{total}" if total else "IMU"
+        text = prefix if not summary else f"{prefix} {state}: {summary}"
+        if error and not connected:
+            text = f"{prefix} error"
+
+        self._imu_lbl.setText(text)
+        self._imu_lbl.setStyleSheet(f"font-size: 11px; color: {color};")
+
+        tooltip_lines = []
+        if active:
+            tooltip_lines.append("Active: " + ", ".join(active))
+        if visible:
+            tooltip_lines.append("Visible: " + ", ".join(visible))
+        if connected:
+            tooltip_lines.append("Connected: " + ", ".join(connected))
+        if error:
+            tooltip_lines.append("Error: " + str(error))
+        self._imu_lbl.setToolTip("\n".join(tooltip_lines))
+
     # ---- recording timer ---------------------------------------------------
 
     def start_timer(self):
@@ -138,8 +189,20 @@ class StatusPanel(QWidget):
         self._fps_lbl.setStyleSheet(self._LABEL_STYLE)
         self._sync_lbl.setText("Sync --")
         self._sync_lbl.setStyleSheet(self._LABEL_STYLE)
+        self._imu_lbl.setText("IMU --")
+        self._imu_lbl.setStyleSheet(self._LABEL_STYLE)
+        self._imu_lbl.setToolTip("")
         self._disk_lbl.setText("Disk --")
         self._disk_lbl.setStyleSheet(self._LABEL_STYLE)
         self._health_lbl.setText("Health --")
         self._health_lbl.setStyleSheet(self._LABEL_STYLE)
         self.stop_timer()
+
+    @staticmethod
+    def _summarise_names(names, limit=2):
+        names = [name for name in names if name]
+        if not names:
+            return ""
+        if len(names) <= limit:
+            return ", ".join(names)
+        return ", ".join(names[:limit]) + f" +{len(names) - limit}"
