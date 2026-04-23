@@ -15,6 +15,7 @@ with the existing camera recorder instead of creating a second session tree.
 """
 
 import csv
+import queue
 import struct
 import threading
 import time
@@ -28,6 +29,7 @@ except ImportError:
 
 MAGIC_WORD = b"\x02\x01\x04\x03\x06\x05\x08\x07"
 HEADER_LEN = 40
+WRITER_STOP = object()
 
 
 class MmWaveDriver:
@@ -44,6 +46,7 @@ class MmWaveDriver:
         self._data_baudrate = int(self._cfg.get("data_baudrate", 921600))
         self._read_chunk_size = int(self._cfg.get("read_chunk_size", 4096))
         self._max_packet_size = int(self._cfg.get("max_packet_size", 65536))
+        self._writer_queue_size = int(self._cfg.get("writer_queue_size", 512))
         self._command_timeout_s = float(self._cfg.get("command_timeout_s", 3.0))
         self._post_config_delay_s = float(
             self._cfg.get("post_config_delay_s", 1.0)
@@ -67,8 +70,12 @@ class MmWaveDriver:
         self._bin_file = None
         self._ts_file = None
         self._ts_writer = None
+        self._writer_queue = None
+        self._writer_thread = None
         self._session_frame_count = 0
         self._last_session_frame_count = 0
+        self._writer_stats = {"written": 0, "dropped": 0, "errors": 0}
+        self._last_writer_stats = dict(self._writer_stats)
 
         self._last_error = None
         self._warnings = []
@@ -136,8 +143,16 @@ class MmWaveDriver:
         out_dir = Path(session_dir) / "mmwave"
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        self._stop_writer_and_close_files()
+
+        writer_queue = queue.Queue(maxsize=self._writer_queue_size)
+        writer_thread = threading.Thread(
+            target=self._writer_loop,
+            args=(writer_queue,),
+            daemon=True,
+        )
+
         with self._session_lock:
-            self._close_session_files_locked()
             self._session_dir = out_dir
             self._session_start_ns = int(session_start_ns)
             self._session_frame_count = 0
@@ -145,7 +160,12 @@ class MmWaveDriver:
             self._ts_file = open(out_dir / "timestamps.csv", "w", newline="")
             self._ts_writer = csv.writer(self._ts_file)
             self._ts_writer.writerow(["frame_idx", "timestamp_ns", "num_points"])
+            self._writer_queue = writer_queue
+            self._writer_thread = writer_thread
+            self._writer_stats = {"written": 0, "dropped": 0, "errors": 0}
             self._session_active = True
+
+        writer_thread.start()
 
         self._log(f"mmWave armed for session: {out_dir}")
         return True
@@ -158,7 +178,8 @@ class MmWaveDriver:
         with self._session_lock:
             self._last_session_frame_count = self._session_frame_count
             self._session_active = False
-            self._close_session_files_locked()
+
+        self._last_writer_stats = self._stop_writer_and_close_files()
 
         return self.get_summary()
 
@@ -184,6 +205,8 @@ class MmWaveDriver:
             session_dir = str(self._session_dir) if self._session_dir else None
             active = self._session_active
             frames = self._session_frame_count if active else self._last_session_frame_count
+            queue_depth = self._writer_queue.qsize() if self._writer_queue is not None else 0
+            writer_stats = dict(self._writer_stats if active else self._last_writer_stats)
         return {
             "enabled": self._enabled,
             "prepared": self._prepared,
@@ -191,6 +214,9 @@ class MmWaveDriver:
             "subdir": "mmwave",
             "session_dir": session_dir,
             "frames_captured": frames,
+            "writer_queue_size": self._writer_queue_size,
+            "writer_queue_depth": queue_depth,
+            "writer_stats": writer_stats,
             "cli_port": self._cli_port,
             "data_port": self._data_port,
             "config_path": str(self._config_path),
@@ -228,11 +254,22 @@ class MmWaveDriver:
                 return
             if self._bin_file is None or self._ts_writer is None:
                 return
-
             frame_idx = self._session_frame_count
+            if self._writer_queue is None:
+                return
+            try:
+                self._writer_queue.put_nowait(
+                    (frame_idx, timestamp_ns, num_points, packet)
+                )
+            except queue.Full:
+                self._writer_stats["dropped"] += 1
+                dropped = self._writer_stats["dropped"]
+                if dropped <= 3 or dropped in (10, 50, 100):
+                    self._warnings.append(
+                        f"mmWave writer queue full, dropped frame_idx={frame_idx}"
+                    )
+                return
             self._session_frame_count += 1
-            self._bin_file.write(packet)
-            self._ts_writer.writerow([frame_idx, timestamp_ns, num_points])
 
     def _extract_packet(self):
         while True:
@@ -339,6 +376,43 @@ class MmWaveDriver:
         self._bin_file = None
         self._ts_file = None
         self._ts_writer = None
+
+    def _stop_writer_and_close_files(self):
+        writer_queue = None
+        writer_thread = None
+        with self._session_lock:
+            writer_queue = self._writer_queue
+            writer_thread = self._writer_thread
+            self._writer_queue = None
+            self._writer_thread = None
+
+        if writer_queue is not None:
+            writer_queue.put(WRITER_STOP)
+        if writer_thread is not None:
+            writer_thread.join(timeout=10)
+
+        with self._session_lock:
+            writer_stats = dict(self._writer_stats)
+            self._close_session_files_locked()
+        return writer_stats
+
+    def _writer_loop(self, writer_queue):
+        while True:
+            item = writer_queue.get()
+            if item is WRITER_STOP:
+                break
+
+            frame_idx, timestamp_ns, num_points, packet = item
+            try:
+                self._bin_file.write(packet)
+                self._ts_writer.writerow([frame_idx, timestamp_ns, num_points])
+                with self._session_lock:
+                    self._writer_stats["written"] += 1
+            except Exception as exc:
+                with self._session_lock:
+                    self._writer_stats["errors"] += 1
+                    self._last_error = str(exc)
+                self._log(f"mmWave write error: {exc}")
 
     @staticmethod
     def _parse_num_points(packet):
