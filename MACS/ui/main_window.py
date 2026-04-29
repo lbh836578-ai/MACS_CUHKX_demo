@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self._label_idx          = 0
         self._breakpoints        = []
         self._rec_start_ns       = None
+        self._pending_preview    = {}
 
         # ---- build UI ------------------------------------------------------
         self._init_window()
@@ -101,7 +102,12 @@ class MainWindow(QMainWindow):
         self.control_panel = ControlPanel(self)
         vbox.addWidget(self.control_panel)
 
-        self.preview_panel = PreviewPanel(self)
+        ui_cfg = self._cfg.get("ui", {})
+        self.preview_panel = PreviewPanel(
+            preview_width=ui_cfg.get("preview_width", 320),
+            preview_height=ui_cfg.get("preview_height", 240),
+            parent=self,
+        )
         vbox.addWidget(self.preview_panel, stretch=1)
 
         data_dir = self._cfg.get("recording", {}).get("output_dir", "data")
@@ -119,12 +125,15 @@ class MainWindow(QMainWindow):
         self.frame_received.connect(self._on_frame_received)
 
     def _start_timers(self):
-        interval = (
-            self._cfg.get("ui", {}).get("status_update_interval_ms", 500)
-        )
+        ui_cfg = self._cfg.get("ui", {})
+        interval = ui_cfg.get("status_update_interval_ms", 500)
         self._tick_timer = QTimer(self)
         self._tick_timer.timeout.connect(self._on_tick)
         self._tick_timer.start(interval)
+
+        self._preview_timer = QTimer(self)
+        self._preview_timer.timeout.connect(self._flush_preview_frames)
+        self._preview_timer.start(ui_cfg.get("preview_update_interval_ms", 33))
 
     # ================================================================
     # State helpers
@@ -136,6 +145,8 @@ class MainWindow(QMainWindow):
 
     def _set_state(self, new):
         self._state = new
+        if new != AppState.RECORDING:
+            self._pending_preview.clear()
         if new == AppState.IDLE:
             self.control_panel.set_idle_state()
             self.status_panel.reset()
@@ -268,13 +279,22 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str, object, float)
     def _on_frame_received(self, modality, frame, fps):
-        """Thread-safe frame update (connected to *frame_received* signal)."""
+        """Store only the latest frame per modality for low-latency preview."""
         if self._state == AppState.RECORDING:
-            self.preview_panel.update_frame(modality, frame, fps)
+            self._pending_preview[modality] = (frame, fps)
 
     def update_frame(self, modality, frame, fps=None):
         """Convenience for same-thread callers (e.g. demo generator)."""
         if self._state == AppState.RECORDING:
+            self._pending_preview[modality] = (frame, fps)
+
+    def _flush_preview_frames(self):
+        if self._state != AppState.RECORDING or not self._pending_preview:
+            return
+
+        pending = self._pending_preview
+        self._pending_preview = {}
+        for modality, (frame, fps) in pending.items():
             self.preview_panel.update_frame(modality, frame, fps)
 
     # ================================================================

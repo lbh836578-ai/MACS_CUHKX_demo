@@ -21,9 +21,10 @@ from PyQt5.QtGui import QImage, QPixmap, QFont
 class ModalityView(QWidget):
     """Displays a single modality frame with a title and info bar."""
 
-    def __init__(self, title, parent=None):
+    def __init__(self, title, preview_size=None, parent=None):
         super().__init__(parent)
         self._title_text = title
+        self._preview_size = preview_size or (320, 240)
         self._build_ui()
 
     # -- UI ------------------------------------------------------------------
@@ -75,10 +76,10 @@ class ModalityView(QWidget):
         if frame is None:
             return
 
-        pixmap = self._to_pixmap(frame)
+        pixmap = self._to_pixmap(frame, self._preview_size)
         if pixmap is not None:
             scaled = pixmap.scaled(
-                self._canvas.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+                self._canvas.size(), Qt.KeepAspectRatio, Qt.FastTransformation
             )
             self._canvas.setPixmap(scaled)
 
@@ -96,12 +97,14 @@ class ModalityView(QWidget):
     # -- conversion ----------------------------------------------------------
 
     @staticmethod
-    def _to_pixmap(frame):
-        """Convert a numpy array to QPixmap (data is deep-copied)."""
+    def _to_pixmap(frame, preview_size=None):
+        """Convert a numpy array to a preview-sized QPixmap."""
         import cv2  # lazy import: called only after QApplication is running,
                     # preventing opencv-python from hijacking QT_QPA_PLATFORM_PLUGIN_PATH
         if frame is None:
             return None
+
+        frame = ModalityView._resize_for_preview(frame, preview_size, cv2)
 
         # --- grayscale / 16-bit ---
         if frame.ndim == 2:
@@ -124,6 +127,28 @@ class ModalityView(QWidget):
 
         return None
 
+    @staticmethod
+    def _resize_for_preview(frame, preview_size, cv2_module):
+        if frame is None or not preview_size:
+            return frame
+
+        max_w, max_h = preview_size
+        if max_w <= 0 or max_h <= 0:
+            return frame
+
+        h, w = frame.shape[:2]
+        scale = min(max_w / float(w), max_h / float(h), 1.0)
+        if scale >= 1.0:
+            return frame
+
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        return cv2_module.resize(
+            frame,
+            (new_w, new_h),
+            interpolation=cv2_module.INTER_AREA,
+        )
+
 
 # ---------------------------------------------------------------------------
 # 2x2 grid panel
@@ -139,9 +164,10 @@ class PreviewPanel(QWidget):
         "Thermal": (1, 1),
     }
 
-    def __init__(self, parent=None):
+    def __init__(self, preview_width=320, preview_height=240, parent=None):
         super().__init__(parent)
         self._views = {}
+        self._preview_size = (preview_width, preview_height)
         self._build_ui()
 
     def _build_ui(self):
@@ -150,7 +176,7 @@ class PreviewPanel(QWidget):
         grid.setSpacing(4)
 
         for name, (row, col) in self.LAYOUT_MAP.items():
-            view = ModalityView(name, self)
+            view = ModalityView(name, self._preview_size, self)
             grid.addWidget(view, row, col)
             self._views[name] = view
 
