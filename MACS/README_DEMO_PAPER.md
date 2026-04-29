@@ -129,6 +129,14 @@ Python >= 3.8
 ### 5.1 NYX650（Scepter SDK）
 
 ```bash
+cd ~
+git clone https://github.com/ScepterSW/ScepterSDK.git ~/ScepterSDK
+
+ls ~/ScepterSDK/BaseSDK/AArch64/PrecompiledSamples
+ls ~/ScepterSDK/MultilanguageSDK/Python/API
+ls ~/ScepterSDK/MultilanguageSDK/Python/Samples/NYX650/DeviceConnectBySN
+
+
 # SDK 已部署在如下路径
 ls ~/ScepterSDK/BaseSDK/AArch64/PrecompiledSamples/NYX650_Samples/
 
@@ -136,9 +144,37 @@ ls ~/ScepterSDK/BaseSDK/AArch64/PrecompiledSamples/NYX650_Samples/
 cd ~/ScepterSDK/BaseSDK/AArch64/PrecompiledSamples/NYX650_Samples/
 bash ./NYX650_OpenCVSample
 
+cd ~/ScepterSDK/BaseSDK/AArch64/PrecompiledSamples
+chmod +x ./NYX650_OpenCVSample
+./NYX650_OpenCVSample
+
 # 验证 Python API
 cd ~/ScepterSDK/MultilanguageSDK/Python/Samples/NYX650/DeviceConnectBySN
 python3 DeviceConnectBySN.py
+```
+
+设置临时网口ip
+```
+#先看你的接口名：
+nmcli device status
+ip -br addr
+ip route
+ip -br link
+```
+
+给这张口设一个临时静态 IP。下面用 eth0 和 192.168.1.100/24 举例，前提是你的 NYX650 IP 在同一个网段，比如 192.168.1.10。
+```
+sudo ip addr flush dev eth0
+sudo ip addr add 192.168.1.100/24 dev eth0
+sudo ip link set eth0 up
+ip -br addr show eth0
+```
+
+```
+#能 ping 通以后再跑 sample。
+cd ~/ScepterSDK/BaseSDK/AArch64/PrecompiledSamples
+chmod +x ./NYX650_OpenCVSample
+./NYX650_OpenCVSample
 ```
 
 ### 5.2 TB4117（HikVision）
