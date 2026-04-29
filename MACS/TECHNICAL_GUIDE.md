@@ -22,6 +22,9 @@
    - 4.7 [HealthMonitor 健康监控](#47-healthmonitor-健康监控)
    - 4.8 [SessionRecorder 会话录制器](#48-sessionrecorder-会话录制器)
    - 4.9 [CaptureController 采集总协调器](#49-capturecontroller-采集总协调器)
+    - 4.10 [MmWaveDriver 雷达驱动](#410-mmwavedriver-雷达驱动)
+    - 4.11 [ImuDriver BLE IMU 驱动](#411-imudriver-ble-imu-驱动)
+    - 4.12 [SessionCoordinator 外设会话协调器](#412-sessioncoordinator-外设会话协调器)
 5. [后处理层](#5-后处理层)
    - 5.1 [Segmenter 分段器](#51-segmenter-分段器)
    - 5.2 [FrameExporter 帧导出器](#52-frameexporter-帧导出器)
@@ -32,53 +35,61 @@
 8. [线程模型与信号流](#8-线程模型与信号流)
 9. [Demo 模式](#9-demo-模式)
 10. [键盘快捷键](#10-键盘快捷键)
+11. [多模态诊断与运维工具](#11-多模态诊断与运维工具)
+12. [批判性评审与优化建议](#12-批判性评审与优化建议)
 
 ---
 
 ## 1. 系统总架构
 
+当前的 MACS 已经不再是“4 路相机 + 后处理”的单一流水线，而是一个以 `CaptureController + SessionRecorder` 为核心、向外扩展 mmWave 与 IMU 的多模态采集骨架。
+
 ```
-┌─────────────────────────────────────────────────────┐
-│                      main.py                        │
-│   加载 config → 创建 QApplication → 创建 MainWindow  │
-│   生产模式: 创建 CaptureController                   │
-│   Demo 模式: 创建 DemoFrameGenerator                 │
-└──────────────────────┬──────────────────────────────┘
-                       │
-         ┌─────────────▼──────────────┐
-         │         UI 层               │
-         │   MainWindow (状态机)        │
-         │   ├── ControlPanel          │
-         │   ├── PreviewPanel (2×2)    │
-         │   └── StatusPanel           │
-         └─────────────┬──────────────┘
-                       │ Qt Signals (跨线程安全)
-         ┌─────────────▼──────────────┐
-         │       CaptureController    │
-         │   (主线程 QObject)          │
-         │   ├── NYX650Driver (线程)   │
-         │   ├── TB4117Driver (线程)   │
-         │   ├── FPSCounter × 4       │
-         │   ├── SyncManager          │
-         │   ├── HealthMonitor        │
-         │   └── SessionRecorder      │
-         │       └── AsyncFrameWriter │
-         └─────────────┬──────────────┘
-                       │ 录制结束后启动
-         ┌─────────────▼──────────────┐
-         │     后处理层 (线程)          │
-         │   PostProcessor            │
-         │   ├── Segmenter            │
-         │   ├── FrameExporter        │
-         │   └── Validator            │
-         └────────────────────────────┘
+┌────────────────────────────────────────────────────────────┐
+│                         main.py                            │
+│  load_config → apply_runtime_imu_selection → QApplication │
+│  → MainWindow → CaptureController / DemoFrameGenerator    │
+└──────────────────────────────┬─────────────────────────────┘
+                               │
+                 ┌─────────────▼─────────────┐
+                 │           UI 层            │
+                 │  MainWindow (状态机)       │
+                 │  ├── ControlPanel         │
+                 │  ├── PreviewPanel         │
+                 │  └── StatusPanel          │
+                 └─────────────┬─────────────┘
+                               │ Qt Signals / Slots
+┌──────────────────────────────▼─────────────────────────────┐
+│                    CaptureController                        │
+│                      (主线程 QObject)                       │
+│  ├── NYX650Driver / TB4117Driver                            │
+│  ├── FPSCounter × 4 / SyncManager / HealthMonitor          │
+│  ├── SessionRecorder  ── owns session_id/session_dir/start │
+│  │    └── AsyncFrameWriter                                  │
+│  └── SessionCoordinator                                     │
+│       ├── MmWaveDriver  ── frames.bin + timestamps.csv      │
+│       └── ImuDriver     ── one CSV per IMU label            │
+└──────────────────────────────┬─────────────────────────────┘
+                               │ raw/session_xxx/ 统一归档
+                 ┌─────────────▼─────────────┐
+                 │      PostProcessor         │
+                 │  Segmenter / Exporter /    │
+                 │  Validator  (当前仅相机)   │
+                 └───────────────────────────┘
 ```
 
-整个系统有 **3 个运行层**：
-- **UI 主线程**：PyQt5 事件循环，绝对不能阻塞
-- **采集线程×2**：NYX650Driver、TB4117Driver 各跑一个 QThread
-- **写盘线程**：AsyncFrameWriter 用 Python threading.Thread 异步写文件，让采集线程不被 I/O 卡住
-- **后处理线程**：PostProcessor 是 QThread，录制结束后自动启动
+这里最重要的设计变化不是“多加了两个驱动”，而是 **会话所有权没有外移**：
+
+- `SessionRecorder` 仍然是唯一的 `session_id / session_dir / recording_start_ns` 生产者。
+- `SessionCoordinator` 只是把 mmWave 和 IMU 挂接到同一会话目录，而不是再建第二棵会话树。
+- `raw/` 目录现在已经是多模态完备的；但 `processed/` 后处理目前仍然只覆盖 `RGB / Depth / IR / Thermal` 四路相机数据。
+
+整个系统现在可以分成 **5 类运行平面**：
+- **UI 主线程**：PyQt5 事件循环、状态栏刷新、录制状态机、健康检查入口。
+- **相机采集线程 × 2**：NYX650Driver 与 TB4117Driver 各自运行在 `QThread` 中。
+- **外设后台工作平面**：mmWave 的串口 reader 线程 + writer 线程；IMU 的 asyncio 事件循环线程 + 每设备 BLE 协程 + CSV writer 线程。
+- **相机写盘线程**：`AsyncFrameWriter` 异步落盘相机帧，避免主线程被 I/O 阻塞。
+- **后处理线程**：`PostProcessor(QThread)`，录制结束后自动启动，但当前仍是相机中心流水线。
 
 ---
 
@@ -120,6 +131,11 @@ def load_config(path):
 ### 2.3 生产模式 vs Demo 模式
 
 ```python
+parser.add_argument("--imu-device", action="append", default=[])
+
+config = load_config(args.config)
+apply_runtime_imu_selection(config, args.imu_device)
+
 if args.demo:
     generator = DemoFrameGenerator(window)
 else:
@@ -129,7 +145,15 @@ else:
     app.aboutToQuit.connect(controller.shutdown)
 ```
 
-生产模式下 `CaptureController` 在 `initialize()` 里启动相机线程。`app.aboutToQuit` 信号确保窗口关闭时 `shutdown()` 被调用，相机线程被正确停止和释放。
+生产模式下，`CaptureController.initialize()` 不仅启动两路相机，还会调用 `SessionCoordinator.prepare()` 预热 mmWave 和 IMU。也就是说，从启动那一刻开始，程序就会完成以下事情：
+
+- 根据 `default.yaml` 和 `--imu-device` 组合出本次真正启用的 IMU 集合。
+- 启动相机线程。
+- 预热雷达串口并下发 profile。
+- 做 BLE 扫描与 IMU 建链尝试。
+- 在 terminal 与 UI 状态栏中显示 IMU 的 configured / visible / connected 名称。
+
+Demo 模式仍然只合成 4 路相机帧，不模拟 mmWave / IMU，因此它适合 UI 验证，不适合多模态端到端验证。
 
 ---
 
@@ -235,17 +259,28 @@ numpy ndarray
 
 ### 3.4 StatusPanel 状态栏
 
-固定高度 28px 的深色横条，包含 5 个 QLabel：
+固定高度 28px 的深色横条，现在包含 6 个 QLabel：
 
 ```
-FPS  RGB:15.0 | D:15.0 | IR:15.0 | T:25.0    Sync 12.3ms   📁 23.4GB    OK    00:01:23
-└── _fps_lbl ──────────────────────────┘  └─_sync_lbl─┘  └─_disk_lbl┘  └─health┘  └─timer┘
+FPS  RGB:15.0 | D:15.0 | IR:15.0 | T:25.0    Sync 12.3ms    IMU 2/5 online: imu03_waist, imu04_left_ankle
+└── _fps_lbl ──────────────────────────┘  └─_sync_lbl─┘    └───────────── _imu_lbl ─────────────┘
+
+Disk 23.4GB    Health OK    REC 00:01:23
+└─_disk_lbl┘   └health┘     └─timer┘
 ```
 
 **同步漂移颜色编码**：
 - `drift < 33ms` → 绿色 `#4CAF50`（良好）
 - `33ms ≤ drift < 66ms` → 橙色（警告）
 - `drift ≥ 66ms` → 红色（超过一帧时长，需要注意）
+
+**IMU 状态编码**：
+- `target`：配置里启用了哪些 IMU label，但还未扫描到或未建链。
+- `visible`：BLE 扫描已看到配置内设备，但还未建立稳定通知流。
+- `online`：已有设备真正进入通知状态，状态栏显示 `connected/total` 和设备名。
+- `error`：启用了 IMU 但 prepare 失败或没有任何设备可用。
+
+StatusPanel 的 IMU 文案来自 `CaptureController._sync_external_status()`，其 tooltip 还会展开显示 Active / Visible / Connected 的完整设备名集合。当前 UI 层只显式展示了 IMU 的外设状态，mmWave 仍然只在 terminal summary 和 `session_meta.json` 中可见。
 
 **磁盘用量**：通过 `shutil.disk_usage()` 读取 `data/` 目录所在分区的剩余空间，每 500ms 刷新一次。
 
@@ -511,12 +546,14 @@ def tick(self, fps_values, drift_ms):
 
 ### 4.8 SessionRecorder 会话录制器
 
+`SessionRecorder` 仍然只负责四路相机帧的时间戳与文件落盘，但它现在同时承担 **整个系统唯一的会话所有权**：`session_id`、`session_dir` 和 `recording_start_ns` 都由它生成，外部模态只能通过 `set_external_metadata()` 把 summary 附着进来。
+
 #### 目录结构
 
 ```
 data/raw/session_20260401_190000/
 ├── session_meta.json     会话元数据
-├── timestamps.csv        每帧时间戳索引
+├── timestamps.csv        相机四模态的逐帧时间戳索引
 ├── RGB/
 │   ├── frame_000000.jpg
 │   ├── frame_000001.jpg
@@ -527,8 +564,15 @@ data/raw/session_20260401_190000/
 ├── IR/
 │   ├── frame_000000.npy
 │   └── ...
-└── Thermal/
-    ├── frame_000000.jpg
+├── Thermal/
+│   ├── frame_000000.jpg
+│   └── ...
+├── mmwave/
+│   ├── frames.bin
+│   └── timestamps.csv
+└── imu/
+    ├── imu01_left_wrist.csv
+    ├── imu03_waist.csv
     └── ...
 ```
 
@@ -573,6 +617,7 @@ seq,modality,timestamp_ns,label
 
 ```json
 {
+    "session_id": "20260401_190000",
   "labels": ["walk", "sit", "read"],
   "breakpoints": [
     {"index": 0, "label_before": "walk", "label_after": "sit", "timestamp_ns": 1743504045000000000},
@@ -583,9 +628,32 @@ seq,modality,timestamp_ns,label
   "duration_s": 90.0,
   "frame_counts": {"RGB": 1350, "Depth": 1350, "IR": 1350, "Thermal": 2250},
   "writer_stats": {"written": 6300, "dropped": 0, "errors": 0},
-  "save_formats": {"RGB": "jpg", "Depth": "npy", "IR": "npy", "Thermal": "jpg"}
+    "save_formats": {"RGB": "jpg", "Depth": "npy", "IR": "npy", "Thermal": "jpg"},
+    "modalities": ["RGB", "Depth", "IR", "Thermal", "mmwave", "imu"],
+    "multimodal": {
+        "modalities": {
+            "mmwave": {
+                "enabled": true,
+                "prepared": true,
+                "frames_captured": 146,
+                "writer_stats": {"written": 146, "dropped": 0, "errors": 0}
+            },
+            "imu": {
+                "enabled": true,
+                "active_devices": ["imu03_waist", "imu04_left_ankle"],
+                "scan_visible_devices": ["imu03_waist", "imu04_left_ankle"],
+                "devices_connected": 2,
+                "devices": [
+                    {"label": "imu03_waist", "samples_captured": 4312},
+                    {"label": "imu04_left_ankle", "samples_captured": 4298}
+                ]
+            }
+        }
+    }
 }
 ```
+
+要注意：`timestamps.csv` 目前仍然只记录四路相机逐帧索引；外部模态不走这张统一索引表，而是走各自目录内的专用文件格式。
 
 ### 4.9 CaptureController 采集总协调器
 
@@ -611,7 +679,7 @@ HealthMonitor.auto_pause_requested → _on_auto_pause()
 HealthMonitor.auto_stop_requested  → _on_auto_stop()
 ```
 
-**`_on_frame()` 是最高频调用**（每秒 70 次）：
+**`_on_frame()` 仍然是最高频调用**（每秒数十次）：
 
 ```python
 @pyqtSlot(str, object, object)
@@ -624,20 +692,116 @@ def _on_frame(self, modality, frame, timestamp_ns):
         self._recorder.write_frame(modality, frame, timestamp_ns)  # 写盘
 ```
 
+但现在 `CaptureController` 还承担了两个以前不存在的职责：
+
+1. 在 `initialize()` 阶段预热 `SessionCoordinator.prepare()`，统一准备 mmWave / IMU。
+2. 在 `_refresh_status()` 阶段把外设 summary 同步到 terminal 与 `StatusPanel.update_imu()`。
+
+真正的录制启动逻辑也已经变成“共享会话起点”的单会话模式：
+
+```python
+@pyqtSlot(list)
+def _on_recording_started(self, labels):
+    session_start_ns = time.time_ns()
+    self._recorder = SessionRecorder(base_dir, labels, self._cfg, start_ns=session_start_ns)
+    self._session_coordinator.start_session(
+        self._recorder.session_dir,
+        session_start_ns,
+    )
+    self._recording = True
+```
+
+这段代码的含义非常关键：外部模态并不拥有独立 session，它们只是复用 `SessionRecorder` 生成的 `session_dir + session_start_ns`。
+
 **录制结束后自动启动后处理**：
 
 ```python
 @pyqtSlot()
 def _on_recording_stopped(self):
     self._recording = False
+    self._recorder.set_external_metadata(
+        self._session_coordinator.stop_session()
+    )
     session_path = self._recorder.finalize()  # 写 CSV 和 JSON
     self._recorder = None
     self._start_post_processing(session_path) # 启动后处理线程
 ```
 
+也就是说，后处理现在已经能“看见”多模态 summary，但它还不会真正 export / validate 这些外模态数据。
+
+### 4.10 MmWaveDriver 雷达驱动
+
+`MmWaveDriver` 是 TI IWR6843ISK 的持久化采集器，设计上刻意拆成两个阶段：
+
+- `prepare()`：打开 CLI/Data 两个串口、下发 `profile_human.cfg`、启动后台 reader 线程。
+- `start_session()/stop_session()`：仅负责把写盘目标绑定到当前 MACS 会话目录。
+
+这意味着雷达不会在每次点击 Start 时重复重启，而是保持 warm 状态，只在会话开始时切换输出目录。
+
+**输出格式**：
+
+```
+session_xxx/mmwave/
+├── frames.bin         原始 packet 字节流顺序拼接
+└── timestamps.csv     frame_idx, timestamp_ns, num_points
+```
+
+实现上它有两个值得特别注意的技术点：
+
+1. **reader / writer 分离**：串口读取线程只做 packet 提取与入队，真实写盘由独立 writer 线程完成。
+2. **弱解析、强保真**：当前只从 header 提取 `num_points`，TLV 本体仍保持原始二进制，不在采集时做重解析。
+
+这种设计避免了在串口线程里做重 CPU 或重 I/O 操作，但也意味着 downstream 如果要做点云级分析，需要再单独解码 `frames.bin`。
+
+### 4.11 ImuDriver BLE IMU 驱动
+
+`ImuDriver` 负责多设备 WitMotion WT9011DCL-BT50 的长期 BLE 采集。它和相机驱动完全不同，不是 `QThread` 拉帧模型，而是：
+
+- 一个后台 Python 线程承载 asyncio 事件循环。
+- 每个设备一个 `_ImuDeviceRunner` 协程。
+- 建链过程通过 `asyncio.Lock` 串行化，避免 BlueZ `Operation already in progress`。
+- BLE scan 结果被缓存，用扫描到的 `BLEDevice` 优先连接，而不是盲连 MAC 字符串。
+
+**数据路径**：
+
+```
+FFE4 notify bytes
+    → _Wt901StreamParser 拆 20-byte frame
+    → _parse_measurement_frame 解 acc/gyro/angle
+    → host receive timestamp_ns
+    → session_dir/imu/<label>.csv
+```
+
+每个 IMU label 都有独立 CSV 文件，字段固定为：
+
+```csv
+timestamp_ns,acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z,angle_x,angle_y,angle_z
+```
+
+`ImuDriver` 现在还承担了可观测性职责：
+
+- `active_devices`：当前配置真正启用的 label 集合。
+- `scan_visible_devices`：BLE 扫描中看见且在配置内的设备名。
+- `devices[*].recent_events`：最近 25 条阶段事件，用于排查在哪个阶段失败。
+- `last_first_notify_latency_ms` / `last_failure_stage` / `disconnect_count`：用于定位不稳定设备。
+
+要强调的一点是：IMU 时间戳是 **主机收到 notify 的时间**，不是设备内部硬件时钟，因此它只能实现“共享主机时间线”，不能等价于严格硬件同步。
+
+### 4.12 SessionCoordinator 外设会话协调器
+
+`SessionCoordinator` 是一个非常薄但非常关键的适配层。它不生产 session，只做三件事：
+
+1. `prepare()`：预热所有启用的外设。
+2. `start_session(session_dir, session_start_ns)`：把外设绑定到相机会话。
+3. `stop_session()/discard_session()`：返回可序列化 summary，供 `SessionRecorder` 写入 `session_meta.json`。
+
+这使得 UI 主程序、`multimodal_smoke_test.py`、后续可能的新入口都能共用同一外设生命周期抽象，而不必重复写 mmWave / IMU 的 session 管理逻辑。
+
 ---
 
 ## 5. 后处理层
+
+后处理层是当前代码库中“最像单模态遗留系统”的部分。虽然 raw 会话目录已经包含 mmWave / IMU，且 `session_meta.json` 会保留它们的 summary，但 `Segmenter / FrameExporter / Validator / PostProcessor` 仍然硬编码为四种相机模态：`RGB / Depth / IR / Thermal`。因此，当前的 processed 目录是 **相机完备、外模态缺席** 的。
 
 录制结束后，`PostProcessor(QThread)` 在后台执行 5 步流水线，通过 `progress(int, str)` 信号实时更新 UI 标题栏。
 
@@ -791,7 +955,7 @@ data/processed/session_XXXXXXXX_XXXXXX/
 
 ## 6. 配置系统
 
-`config/default.yaml` 是唯一配置入口，`yaml.safe_load` 解析后以 `dict` 形式传给各个模块：
+`config/default.yaml` 现在已经演变成 5 个逻辑名字空间：`camera`、`recording`、`health`、`ui`、`multimodal`。其中 `multimodal` 是本轮架构扩展的核心。
 
 ```yaml
 camera:
@@ -809,24 +973,61 @@ camera:
 
 recording:
   output_dir: "data"
+    raw_subdir: "raw"
+    processed_subdir: "processed"
   save_format:
-    RGB: "jpg"       # 有损压缩，节省空间
-    Depth: "npy"     # 保留完整 uint16 数值（mm 单位）
-    IR: "npy"        # 保留原始数值
-    Thermal: "jpg"   # 已是伪彩色图，jpg 足够
-  jpg_quality: 95    # JPEG 质量系数
+        RGB: "jpg"
+        Depth: "npy"
+        IR: "npy"
+        Thermal: "jpg"
+    jpg_quality: 95
 
 health:
-  fps_warn_ratio: 0.7          # FPS告警线 = 目标×0.7
-  frame_loss_threshold: 10     # 连续N次无帧则auto-pause
-  sync_drift_threshold_ms: 66  # 超过一帧时长的漂移
-  disk_min_gb: 1.0             # 最低磁盘剩余量
+    fps_warn_ratio: 0.7
+    frame_loss_threshold: 10
+    sync_drift_threshold_ms: 66
+    disk_min_gb: 1.0
 
 ui:
-  status_update_interval_ms: 500  # 状态栏刷新间隔
+    status_update_interval_ms: 500
+
+multimodal:
+    mmwave:
+        enabled: true
+        cli_port: "/dev/ttyUSB0"
+        data_port: "/dev/ttyUSB1"
+        cli_baudrate: 115200
+        data_baudrate: 921600
+        writer_queue_size: 512
+        config_path: "config/profile_human.cfg"
+
+    imu:
+        enabled: true
+        sample_rate_hz: 50
+        connect_timeout_s: 20
+        connect_stagger_s: 2.0
+        scan_warmup_s: 10.0
+        retry_scan_s: 5.0
+        ready_timeout_s: 60
+        active_devices: []
+        devices:
+            - label: "imu01_left_wrist"
+                mac: "DC:E1:B0:1F:67:6E"
+                enabled: true
+            - label: "imu02_right_wrist"
+                mac: "E5:9E:9B:1F:CE:48"
+                enabled: false
 ```
 
-各模块通过 `config.get("camera", {}).get("nyx650", {})` 逐级安全取值，未配置的键使用硬编码默认值。
+配置系统现在有 3 层 IMU 选择语义：
+
+1. `multimodal.imu.enabled`：整套 IMU 采集总开关。
+2. `multimodal.imu.devices[*].enabled`：适合把 5 个 IMU 固定分配给不同树莓派的长期静态开关。
+3. `multimodal.imu.active_devices`：适合同一份配置内做临时白名单。
+
+运行时，`runtime_config.resolve_enabled_imu_devices()` 会先过滤设备级 `enabled`，再过滤 `active_devices`；命令行的 `--imu-device <label>` 则通过 `apply_runtime_imu_selection()` 覆盖内存里的 `active_devices`，不会改写磁盘配置文件。
+
+各模块仍然通过 `config.get(...).get(...)` 逐级安全取值，但要注意：当前代码还没有 schema 校验，非法键名或字段类型错误通常要等到运行时才暴露出来。
 
 ---
 
@@ -841,7 +1042,14 @@ data/
 │       ├── RGB/frame_000000.jpg ...
 │       ├── Depth/frame_000000.npy ...
 │       ├── IR/frame_000000.npy ...
-│       └── Thermal/frame_000000.jpg ...
+│       ├── Thermal/frame_000000.jpg ...
+│       ├── mmwave/
+│       │   ├── frames.bin
+│       │   └── timestamps.csv
+│       └── imu/
+│           ├── imu01_left_wrist.csv
+│           ├── imu03_waist.csv
+│           └── ...
 │
 └── processed/
     └── session_20260401_190000/    后处理完成后创建（同名）
@@ -862,6 +1070,13 @@ data/
             └── ...
 ```
 
+这个目录结构体现了当前系统的一个真实边界：
+
+- `raw/` 已经是完整多模态采集结果。
+- `processed/` 目前仍然只是相机四模态的动作级重组织结果。
+
+因此，如果你当前要做 mmWave / IMU 下游分析，原始数据入口仍然是 `raw/session_xxx/mmwave` 与 `raw/session_xxx/imu`，而不是 `processed/`。
+
 ---
 
 ## 8. 线程模型与信号流
@@ -869,12 +1084,18 @@ data/
 ```
 主线程 (Qt Event Loop)
 │
+├── main.py
+│   → load_config()
+│   → apply_runtime_imu_selection()
+│   → CaptureController.initialize()
+│
 ├── QTimer 500ms → CaptureController._refresh_status()
 │                    → HealthMonitor.tick()
-│                    → StatusPanel 更新
+│                    → SessionCoordinator.get_summary()
+│                    → StatusPanel.update_fps/sync/imu/health()
 │
 ├── QTimer 500ms → MainWindow._on_tick()
-│                    → StatusPanel 磁盘/计时器更新
+│                    → StatusPanel.update_disk()/refresh_timer()
 │
 ├── frame_received(str, ndarray, float) 信号 [Qt::QueuedConnection]
 │   ← 来自相机线程，Qt 自动跨线程排队
@@ -898,20 +1119,38 @@ data/
 采集线程 2 (TB4117Driver, QThread)
 └── cap.read() 阻塞 → 裁剪 → frame_captured.emit()
 
+mmWave reader 线程 (Python threading.Thread)
+└── serial.read() → magic word 对齐 → extract packet → writer_queue.put_nowait()
+
+mmWave writer 线程 (Python threading.Thread)
+└── queue.get() → frames.bin / timestamps.csv
+
+IMU asyncio 线程 (Python threading.Thread + event loop)
+└── refresh_scan_cache()
+    ├── _ImuDeviceRunner(label_1)
+    ├── _ImuDeviceRunner(label_2)
+    └── ...
+        └── connect → write_gatt_char → start_notify → parse notify frame
+
+IMU CSV writer 线程 (Python threading.Thread)
+└── queue.get() → <label>.csv writer.writerow()
+
 后处理线程 (PostProcessor, QThread, 仅在录制结束后存在)
 └── Segmenter → FrameExporter → Validator → progress.emit()
 ```
 
 **跨线程安全保证**：
 - 相机线程通过 `emit` 把帧数据交给 Qt 信号系统，Qt 自动用 `QueuedConnection` 把槽函数调用排队到主线程执行，无需手动加锁
-- `SyncManager` 和 `HealthMonitor` 内部用 `threading.Lock` 保护共享状态（因为虽然 slot 在主线程执行，但 `HealthMonitor.set_camera_connected()` 可能从不同点调用）
-- `AsyncFrameWriter` 用 `queue.Queue`（线程安全）在采集侧 put、写盘侧 get
+- `SyncManager` 和 `HealthMonitor` 内部用 `threading.Lock` 保护共享状态。
+- mmWave 通过有界 `queue.Queue(maxsize=writer_queue_size)` 隔离串口读取与磁盘写入。
+- IMU 通过 `asyncio.Lock` 串行化 BLE 建链，通过单独 CSV writer 线程把 notify 回调从磁盘 I/O 中解耦。
+- `SessionCoordinator.get_summary()` 返回纯 Python 可序列化结构，因此可以被 UI、smoke test、session meta 共同消费。
 
 ---
 
 ## 9. Demo 模式
 
-`DemoFrameGenerator` 用于不接相机的测试，每 67ms（≈15fps 节奏）合成一帧：
+`DemoFrameGenerator` 用于不接相机的测试，每 67ms（≈15fps 节奏）合成一帧。它只模拟 `RGB/Depth/IR/Thermal`，不会模拟 mmWave 或 IMU，所以它更接近“UI 演示模式”而不是“全链路系统仿真模式”：
 
 ```python
 def _generate(self):
@@ -939,4 +1178,190 @@ def _generate(self):
 
 ---
 
-*文档基于代码版本 2026-04-02 生成，覆盖所有 .py 源文件。*
+## 11. 多模态诊断与运维工具
+
+随着 mmWave / IMU 引入，MACS 已经不适合只靠 UI 点 Start 来排查问题。当前代码库里实际可用的诊断入口有 3 个：
+
+### 11.1 setup_check.py
+
+`setup_check.py` 是环境级体检工具，负责检查：
+
+- Python 版本和核心依赖包。
+- NYX650 SDK 路径与导入情况。
+- `/dev/video*` 与 `v4l2-ctl` 探测结果。
+- mmWave CP2105 串口桥与 Bluetooth 适配器可用性。
+- 磁盘空间和 USB 枚举结果。
+
+它适合在一台新树莓派刚部署完、还没开始录制之前执行，用来回答“环境是否具备最起码的运行条件”。
+
+### 11.2 tools/multimodal_smoke_test.py
+
+这是 **不启动 UI** 的外设冒烟测试入口，直接复用 `SessionCoordinator`：
+
+```bash
+python3 tools/multimodal_smoke_test.py \
+    --config config/default.yaml \
+    --imu-device imu03_waist \
+    --imu-device imu04_left_ankle \
+    --duration 15 \
+    --imu-ready-timeout 20
+```
+
+它最适合回答两个问题：
+
+- 外设在当前配置下能不能准备成功。
+- 在不掺杂 UI、相机线程和后处理的情况下，mmWave / IMU 能不能稳定写到会话目录。
+
+### 11.3 tools/ble_imu_diagnose.py
+
+这是专门为 WitMotion IMU 提供的 BLE 级诊断工具，路径上完全绕开 MACS session pipeline。它会对配置中的 IMU 做：
+
+1. BLE 扫描。
+2. connect。
+3. GATT service / characteristic 验证。
+4. sample rate 写入。
+5. notify 窗口内帧统计。
+
+这个工具适合回答“到底是 BlueZ / BLE 本身不稳，还是 MACS 生产路径上的会话写盘 / 调度放大了问题”。
+
+## 12. 批判性评审与优化建议
+
+下面这一节不是功能清单，而是从 ACM 教授 / 资深系统工程师角度，对这套系统中 **已经解决、但还没有被深度解决** 的问题进行逆向审视。
+
+### 12.1 多模态时间同步仍然只是“共享会话起点”，不是严格同步
+
+当前系统做对了两件事：
+
+- 所有模态共用同一个 `session_dir`。
+- 所有模态共用同一个 `session_start_ns`。
+
+但这离“严格多模态同步”还有明显距离。相机有各自驱动时间线，mmWave 时间戳取自主机收到 packet 的时间，IMU 时间戳取自主机收到 BLE notify 的时间。换言之，系统现在实现的是 **shared host-time anchoring**，不是硬件触发同步，也不是经过时延建模校正后的统一时钟。
+
+如果后续目标是论文级多模态对齐或定量行为分析，那么当前模型还缺：
+
+- 设备到主机的链路时延分布建模。
+- 各模态时钟偏差与漂移标定。
+- 可重复的同步基准事件。
+- 动作级、会话级的跨模态对齐误差报告。
+
+### 12.2 后处理流水线仍然是“相机中心”的，外模态只停留在 raw 层
+
+这是当前架构最显著的结构性缺口之一。
+
+- `Segmenter.ALL_MODALITIES` 只包含 `RGB/Depth/IR/Thermal`。
+- `FrameExporter` 只实现四种相机导出函数。
+- `Validator` 只验证四种相机输出。
+- `session_report.json` 的完整性判断也只基于相机动作导出结果。
+
+这意味着当前系统虽然已经能采到 mmWave 和 IMU，但它们还没有真正被纳入“标准数据产品”。从研究产出角度看，这会带来一个隐性风险：**采集层已经多模态，分析层仍然单模态**。
+
+建议优先级很高的下一步是：
+
+1. 为外模态建立 segment-level 索引与导出规范。
+2. 在 processed/ 中加入 `imu/` 与 `mmwave/` 的动作级组织形式。
+3. 把外模态完整性验证纳入 `metadata.json` 与 `session_report.json`。
+
+### 12.3 健康监控对外部模态几乎是盲的
+
+`HealthMonitor.ALL_MODALITIES` 仍然硬编码为四种相机模态。它会检查 FPS、断帧、相机断连、同步漂移和磁盘空间，但不会检查：
+
+- IMU 是否全部掉线。
+- 某个 IMU 是否只有表头、没有数据。
+- mmWave writer queue 是否已经开始丢包。
+- mmWave / IMU 的 writer errors 是否持续累积。
+
+这会导致一种很危险的错觉：UI 显示 `Health OK`，但外模态可能已经部分或全部失效。
+
+下一步应该把外模态的健康语义正式引入：
+
+- IMU connected ratio。
+- IMU first-notify latency。
+- mmWave queue depth / dropped count。
+- 外模态长时间无样本的 timeout 判据。
+
+### 12.4 auto-pause 的语义当前并不闭合
+
+`CaptureController._on_auto_pause()` 当前只做了两件事：
+
+- `self._recording = False`
+- `self._win.status_panel.update_health("ERROR")`
+
+但它没有：
+
+- 调用 `SessionCoordinator.stop_session()`。
+- 调用 `SessionRecorder.finalize()`。
+- 显式停止 mmWave / IMU 的当前会话写盘。
+
+结果是“相机不再写入 SessionRecorder，但外部模态仍可能继续写各自文件”。从系统语义看，这不是一个真正的 pause，而是一个 **partial write stop**。如果后续要保留 auto-pause 机制，它至少应该定义清楚：暂停的是全部模态，还是只有相机主链路。
+
+### 12.5 启动路径把外设预热放在 UI 主路径上，扩展后会越来越重
+
+`main.py` 在进入 Qt 事件循环之前调用 `controller.initialize()`；而 `initialize()` 内部会同步调用 `SessionCoordinator.prepare()`。这意味着：
+
+- mmWave 串口配置。
+- IMU BLE 扫描。
+- IMU 初始连接等待。
+
+都发生在 UI 主启动路径上。`ImuDriver.prepare()` 甚至会等待 `_initial_attempts_done` 直到 `ready_timeout_s`。随着设备数量上升，这个路径会越来越重，最终表现为“窗口出来慢、启动阶段看起来像卡死”。
+
+更合理的演进方向是把 prepare 拆成：
+
+- 非阻塞启动。
+- 后台 warm-up。
+- UI 中可见的 readiness state。
+- 录制开始前的显式 readiness gate。
+
+### 12.6 IMU 异步 writer 解决了回调阻塞，但引入了无界内存风险
+
+IMU 的 CSV 写盘确实已经从 notify 回调中剥离出来，这是正确方向；但 `_ImuSessionState.activate()` 里使用的是无界 `queue.Queue()`。这意味着在下列情况下：
+
+- SD 卡抖动。
+- 文件系统瞬时变慢。
+- 蓝牙数据持续涌入。
+
+队列会无限增长，系统会用内存去吸收 I/O 失配，而不是显式暴露背压。这是一个典型的“把阻塞问题换成内存问题”的设计折中，还没有完全闭环。
+
+建议方向是：
+
+- 改成有界队列。
+- 统计 dropped / backlog / flush latency。
+- 把这些指标接入 UI 与健康监控。
+
+### 12.7 数据模型仍然缺一张统一的多模态事件索引表
+
+当前系统的数据组织是分裂的：
+
+- 相机四模态有统一 `timestamps.csv`。
+- mmWave 有自己的 `timestamps.csv`。
+- 每个 IMU 各有一份 CSV。
+- `session_meta.json` 只保存 summary，不保存逐事件级统一索引。
+
+这对于工程实现很方便，但对于跨模态检索和离线研究并不理想。未来一旦要做：
+
+- 给定时间窗回放所有模态。
+- 动作切换点附近的多模态联合切片。
+- 多设备跨会话对比。
+
+你会很快发现缺一张统一索引表会显著增加数据工程复杂度。
+
+### 12.8 配置治理和自动化验证还不够工程化
+
+现在的配置系统已经足够灵活，但工程化程度还不够高：
+
+- 没有 schema 校验。
+- 没有配置版本号。
+- 没有自动化集成测试目录。
+- 没有覆盖“相机 + mmWave + IMU + 后处理”的回归测试。
+
+这会导致一个典型问题：系统越复杂，越依赖人工 smoke test 和记忆里的操作经验。短期内还能靠作者本人维持，长期则会变成知识债务。
+
+更成熟的路线应包括：
+
+1. 配置 schema 与启动前校验。
+2. 最小可复现 smoke test 套件。
+3. 针对多模态 `session_meta.json` 的回归检查。
+4. 针对后处理产物结构的自动化验证。
+
+---
+
+*文档基于 2026-04-23 的 MACS 代码状态更新，已纳入 mmWave / IMU 扩展、运行时 IMU 设备筛选、StatusPanel 外设显示，以及一份批判性架构评审。*

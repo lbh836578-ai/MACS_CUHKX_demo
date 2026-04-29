@@ -4,7 +4,7 @@ recorder.py
 Persists captured frames and session metadata to disk.
 
 Design
-~~~~~~
+
 *   An **AsyncFrameWriter** (plain ``threading.Thread``) owns a bounded
     queue and writes frames in a background thread so that camera capture
     is never blocked by I/O.
@@ -13,7 +13,7 @@ Design
     ``timestamps.csv`` + ``session_meta.json`` on finalisation.
 
 Directory layout
-~~~~~~~~~~~~~~~~
+
 ::
 
     data/raw/session_20260330_143012/
@@ -55,7 +55,7 @@ import numpy as np
 class AsyncFrameWriter(threading.Thread):
     """Daemon thread that drains a frame queue and writes to disk."""
 
-    def __init__(self, maxsize=600, jpg_quality=95):
+    def __init__(self, maxsize=1000, jpg_quality=95):
         super().__init__(daemon=True)
         self._queue = queue.Queue(maxsize=maxsize)
         self._stop_event = threading.Event()
