@@ -256,6 +256,8 @@ class TB4117Driver(BaseCameraDriver):
         super().__init__(config, parent)
         self._cap = None
         self._device_idx = None
+        self._actual_fourcc = None
+        self._frame_debug_logged = 0
 
         # Parse expected resolution from config
         th_cfg = (config or {}).get("thermal", {})
@@ -347,42 +349,23 @@ class TB4117Driver(BaseCameraDriver):
             else:
                 self._log(f"v4l2-ctl WARN (rc={rc}): {cmd_str}  {err}")
 
-        # --- Open with OpenCV -------------------------------------------
-        cap = cv2.VideoCapture(self._device_idx, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            raise RuntimeError(
-                f"cv2.VideoCapture could not open /dev/video{self._device_idx}"
-            )
+        # --- Open with OpenCV and probe content -------------------------
+        cap, meta = self._open_capture_with_best_format()
+        actual_w = meta["width"]
+        actual_h = meta["height"]
+        actual_fps = meta["fps"]
+        fourcc_str = meta["fourcc"]
+        self._actual_fourcc = fourcc_str
+        self._frame_debug_logged = 0
 
-        # Try to set FOURCC — prefer the format from config, fall back to others
-        preferred = cv2.VideoWriter_fourcc(*self._pixfmt[:4].ljust(4))
-        fourcc_prefs = [preferred] + [f for f in _FOURCC_SUPPORTED if f != preferred]
-        for fourcc in fourcc_prefs:
-            cap.set(cv2.CAP_PROP_FOURCC, fourcc)
-            actual = int(cap.get(cv2.CAP_PROP_FOURCC))
-            if actual == fourcc:
-                break
-
-        # Set resolution and FPS via OpenCV (may differ from v4l2-ctl)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self._target_w)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._target_h)
-        cap.set(cv2.CAP_PROP_FPS,          self._target_fps)
-
-        # Reduce internal buffer to minimise latency
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-
-        # Log actual negotiated format
-        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        actual_fps = cap.get(cv2.CAP_PROP_FPS)
-        actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
-        fourcc_str = "".join(
-            chr((actual_fourcc >> (8 * i)) & 0xFF) for i in range(4)
-        )
         self._log(
             f"Opened /dev/video{self._device_idx}: "
             f"{actual_w}x{actual_h} @{actual_fps:.1f}fps  FOURCC={fourcc_str}"
         )
+        if meta.get("sample_stats"):
+            self._log(
+                "Initial sample stats: " + meta["sample_stats"]
+            )
 
         # Detect composite-frame scenario
         if actual_h > self._target_h and actual_h % self._target_h == 0:
@@ -401,10 +384,6 @@ class TB4117Driver(BaseCameraDriver):
             )
         else:
             self._crop_h = None
-
-        # Read and discard a few frames to let the sensor stabilise
-        for _ in range(5):
-            cap.read()
 
         self._cap = cap
 
@@ -438,32 +417,18 @@ class TB4117Driver(BaseCameraDriver):
         for attempt in range(1, 6):          # up to 5 retries, 1 s apart
             time.sleep(1.0)
             try:
-                cap = cv2.VideoCapture(self._device_idx, cv2.CAP_V4L2)
-                if not cap.isOpened():
-                    cap.release()
-                    self._log(f"Reopen attempt {attempt}/5 failed (not opened)")
-                    continue
-                # Re-apply format settings
-                preferred = cv2.VideoWriter_fourcc(*self._pixfmt[:4].ljust(4))
-                fourcc_prefs = [preferred] + [
-                    f for f in _FOURCC_SUPPORTED if f != preferred
-                ]
-                for fourcc in fourcc_prefs:
-                    cap.set(cv2.CAP_PROP_FOURCC, fourcc)
-                    if int(cap.get(cv2.CAP_PROP_FOURCC)) == fourcc:
-                        break
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self._target_w)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._target_h)
-                cap.set(cv2.CAP_PROP_FPS,          self._target_fps)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-                # Verify we can actually read a frame
-                ok, _ = cap.read()
-                if ok:
-                    self._cap = cap
-                    self._log(f"Reopen succeeded on attempt {attempt}")
-                    return True
-                cap.release()
-                self._log(f"Reopen attempt {attempt}/5 failed (read test)")
+                cap, meta = self._open_capture_with_best_format()
+                self._cap = cap
+                self._actual_fourcc = meta["fourcc"]
+                self._frame_debug_logged = 0
+                self._log(
+                    f"Reopen succeeded on attempt {attempt}: "
+                    f"{meta['width']}x{meta['height']} @{meta['fps']:.1f}fps "
+                    f"FOURCC={meta['fourcc']}"
+                )
+                if meta.get("sample_stats"):
+                    self._log("Reconnect sample stats: " + meta["sample_stats"])
+                return True
             except Exception as exc:
                 self._log(f"Reopen attempt {attempt}/5 exception: {exc}")
 
@@ -520,7 +485,133 @@ class TB4117Driver(BaseCameraDriver):
                     )
                     frame = frame[: self._crop_h, :, :]
 
+            frame = self._normalise_frame(frame)
+            self._log_frame_stats(frame)
+
             self.frame_captured.emit("Thermal", frame, ts)
+
+    def _open_capture_with_best_format(self):
+        preferred = cv2.VideoWriter_fourcc(*self._pixfmt[:4].ljust(4))
+        fourcc_prefs = [preferred] + [f for f in _FOURCC_SUPPORTED if f != preferred]
+
+        fallback = None
+        fallback_meta = None
+
+        for fourcc in fourcc_prefs:
+            cap = cv2.VideoCapture(self._device_idx, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                cap.release()
+                continue
+
+            cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
+            cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._target_w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._target_h)
+            cap.set(cv2.CAP_PROP_FPS, self._target_fps)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            actual_fps = cap.get(cv2.CAP_PROP_FPS)
+            actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+            fourcc_str = self._fourcc_to_str(actual_fourcc)
+
+            sample = None
+            for _ in range(6):
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    sample = frame
+
+            normalised = self._normalise_frame(sample)
+            stats = self._frame_stats(normalised)
+            self._log(
+                f"Probe /dev/video{self._device_idx}: requested={self._fourcc_to_str(fourcc)} "
+                f"actual={fourcc_str} {actual_w}x{actual_h} @{actual_fps:.1f}fps "
+                f"sample={stats}"
+            )
+
+            meta = {
+                "width": actual_w,
+                "height": actual_h,
+                "fps": actual_fps,
+                "fourcc": fourcc_str,
+                "sample_stats": stats,
+            }
+
+            if sample is None:
+                cap.release()
+                continue
+
+            if fallback is None:
+                fallback = cap
+                fallback_meta = meta
+            else:
+                # Keep only the first viable fallback open.
+                cap.release()
+
+            if not self._frame_looks_black(normalised):
+                if fallback is not None and fallback is not cap:
+                    fallback.release()
+                return cap, meta
+
+        if fallback is not None:
+            self._log(
+                "WARNING: all probed formats produced near-black samples; "
+                f"keeping fallback FOURCC={fallback_meta['fourcc']} for live capture"
+            )
+            return fallback, fallback_meta
+
+        raise RuntimeError(
+            f"cv2.VideoCapture could not produce frames from /dev/video{self._device_idx}"
+        )
+
+    @staticmethod
+    def _normalise_frame(frame):
+        if frame is None:
+            return None
+        if frame.ndim == 3 and frame.shape[2] == 2:
+            return cv2.cvtColor(frame, cv2.COLOR_YUV2BGR_YUY2)
+        if frame.ndim == 3 and frame.shape[2] == 4:
+            return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        if frame.ndim == 3 and frame.shape[2] == 1:
+            return frame[:, :, 0]
+        return frame
+
+    @staticmethod
+    def _frame_stats(frame):
+        if frame is None:
+            return "no-frame"
+        return (
+            f"shape={frame.shape} dtype={frame.dtype} "
+            f"min={int(frame.min())} max={int(frame.max())} mean={float(frame.mean()):.2f}"
+        )
+
+    @staticmethod
+    def _frame_looks_black(frame):
+        if frame is None:
+            return True
+        try:
+            return int(frame.max()) <= 1 and float(frame.mean()) <= 0.5
+        except Exception:
+            return False
+
+    def _log_frame_stats(self, frame):
+        if frame is None or self._frame_debug_logged >= 5:
+            return
+        self._frame_debug_logged += 1
+        self._log(
+            f"Live frame {self._frame_debug_logged}/5 ({self._actual_fourcc or 'unknown'}): "
+            f"{self._frame_stats(frame)}"
+        )
+        if self._frame_looks_black(frame):
+            self._log(
+                "WARNING: thermal frame looks near-black after normalisation; "
+                "check FOURCC, gain/palette mode, and direct OpenCV frame dump"
+            )
+
+    @staticmethod
+    def _fourcc_to_str(value):
+        return "".join(chr((value >> (8 * i)) & 0xFF) for i in range(4))
 
     # ================================================================
     #  Logging
