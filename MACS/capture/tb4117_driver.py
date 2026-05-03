@@ -257,6 +257,8 @@ class TB4117Driver(BaseCameraDriver):
         self._cap = None
         self._device_idx = None
         self._actual_fourcc = None
+        self._actual_size = None
+        self._selected_request_size = None
         self._frame_debug_logged = 0
 
         # Parse expected resolution from config
@@ -265,6 +267,9 @@ class TB4117Driver(BaseCameraDriver):
         self._target_h = th_cfg.get("height", 192)
         self._target_fps = th_cfg.get("fps", 25)
         self._pixfmt = th_cfg.get("pixelformat", "YUYV")
+        self._warmup_frames = int(th_cfg.get("warmup_frames", 5))
+        self._warmup_sleep_s = float(th_cfg.get("warmup_sleep_s", 0.1))
+        self._resolution_candidates = self._build_resolution_candidates(th_cfg)
 
         # Composite-frame cropping state
         self._crop_h = None   # determined on first frame
@@ -356,31 +361,44 @@ class TB4117Driver(BaseCameraDriver):
         actual_fps = meta["fps"]
         fourcc_str = meta["fourcc"]
         self._actual_fourcc = fourcc_str
+        self._actual_size = (actual_w, actual_h)
+        self._selected_request_size = (
+            int(meta.get("requested_width", actual_w)),
+            int(meta.get("requested_height", actual_h)),
+        )
         self._frame_debug_logged = 0
 
         self._log(
             f"Opened /dev/video{self._device_idx}: "
             f"{actual_w}x{actual_h} @{actual_fps:.1f}fps  FOURCC={fourcc_str}"
         )
+        requested_w = meta.get("requested_width")
+        requested_h = meta.get("requested_height")
+        if requested_w is not None and requested_h is not None:
+            self._log(
+                f"Selected request profile: {requested_w}x{requested_h} "
+                f"requested={meta.get('requested_fourcc', fourcc_str)}"
+            )
         if meta.get("sample_stats"):
             self._log(
                 "Initial sample stats: " + meta["sample_stats"]
             )
 
         # Detect composite-frame scenario
-        if actual_h > self._target_h and actual_h % self._target_h == 0:
-            n = actual_h // self._target_h
-            self._crop_h = self._target_h
+        expected_h = self._selected_request_size[1]
+        if actual_h > expected_h and actual_h % expected_h == 0:
+            n = actual_h // expected_h
+            self._crop_h = expected_h
             self._log(
                 f"Composite frame detected: {n} sub-images stacked.  "
-                f"Will crop to top {self._target_w}x{self._crop_h}"
+                f"Will crop to top {actual_w}x{self._crop_h}"
             )
-        elif actual_h != self._target_h:
+        elif actual_h != expected_h:
             # Non-standard height — use whatever the camera gives
             self._crop_h = None
             self._log(
                 f"NOTE: actual height {actual_h} differs from target "
-                f"{self._target_h}.  Using full frame."
+                f"{expected_h}.  Using full frame."
             )
         else:
             self._crop_h = None
@@ -420,6 +438,11 @@ class TB4117Driver(BaseCameraDriver):
                 cap, meta = self._open_capture_with_best_format()
                 self._cap = cap
                 self._actual_fourcc = meta["fourcc"]
+                self._actual_size = (meta["width"], meta["height"])
+                self._selected_request_size = (
+                    int(meta.get("requested_width", meta["width"])),
+                    int(meta.get("requested_height", meta["height"])),
+                )
                 self._frame_debug_logged = 0
                 self._log(
                     f"Reopen succeeded on attempt {attempt}: "
@@ -475,13 +498,17 @@ class TB4117Driver(BaseCameraDriver):
             # ---- First-frame auto-crop detection ----------------------
             # Some cameras don't report composite height via the property
             # but actually deliver taller frames.  Detect on first frame.
-            if self._crop_h is None and frame.shape[0] > self._target_h:
+            expected_h = (
+                self._selected_request_size[1]
+                if self._selected_request_size is not None else self._target_h
+            )
+            if self._crop_h is None and frame.shape[0] > expected_h:
                 h = frame.shape[0]
-                if h % self._target_h == 0:
-                    self._crop_h = self._target_h
+                if h % expected_h == 0:
+                    self._crop_h = expected_h
                     self._log(
                         f"Auto-detected composite frame ({h}px tall).  "
-                        f"Cropping to {self._target_h}px."
+                        f"Cropping to {expected_h}px."
                     )
                     frame = frame[: self._crop_h, :, :]
 
@@ -494,21 +521,42 @@ class TB4117Driver(BaseCameraDriver):
         preferred = cv2.VideoWriter_fourcc(*self._pixfmt[:4].ljust(4))
         fourcc_prefs = [preferred] + [f for f in _FOURCC_SUPPORTED if f != preferred]
 
-        fallback = None
         fallback_meta = None
 
-        for fourcc in fourcc_prefs:
-            cap = cv2.VideoCapture(self._device_idx, cv2.CAP_V4L2)
-            if not cap.isOpened():
-                cap.release()
-                continue
+        for req_w, req_h in self._resolution_candidates:
+            for fourcc in fourcc_prefs:
+                meta = self._probe_profile(req_w, req_h, fourcc)
+                if meta is None:
+                    continue
 
-            cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
-            cap.set(cv2.CAP_PROP_FOURCC, fourcc)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._target_w)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._target_h)
-            cap.set(cv2.CAP_PROP_FPS, self._target_fps)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+                if fallback_meta is None:
+                    fallback_meta = meta
+
+                if not meta.get("looks_black", True):
+                    return self._open_profile(meta)
+
+        if fallback_meta is not None:
+            self._log(
+                "WARNING: all probed formats produced near-black samples; "
+                f"keeping fallback FOURCC={fallback_meta['fourcc']} for live capture"
+            )
+            return self._open_profile(fallback_meta)
+
+        raise RuntimeError(
+            f"cv2.VideoCapture could not produce frames from /dev/video{self._device_idx}"
+        )
+
+    def _probe_profile(self, req_w, req_h, fourcc):
+        cap = self._configure_capture(req_w, req_h, fourcc)
+        if cap is None:
+            return None
+
+        sample = None
+        try:
+            self._warmup_capture(cap)
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                sample = frame
 
             actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -516,54 +564,113 @@ class TB4117Driver(BaseCameraDriver):
             actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
             fourcc_str = self._fourcc_to_str(actual_fourcc)
 
-            sample = None
-            for _ in range(6):
-                ok, frame = cap.read()
-                if ok and frame is not None:
-                    sample = frame
-
             normalised = self._normalise_frame(sample)
             stats = self._frame_stats(normalised)
+            looks_black = self._frame_looks_black(normalised)
             self._log(
-                f"Probe /dev/video{self._device_idx}: requested={self._fourcc_to_str(fourcc)} "
-                f"actual={fourcc_str} {actual_w}x{actual_h} @{actual_fps:.1f}fps "
-                f"sample={stats}"
+                f"Probe /dev/video{self._device_idx}: request={req_w}x{req_h} "
+                f"requested={self._fourcc_to_str(fourcc)} actual={fourcc_str} "
+                f"{actual_w}x{actual_h} @{actual_fps:.1f}fps sample={stats}"
             )
 
-            meta = {
+            if sample is None:
+                return None
+
+            return {
+                "requested_width": req_w,
+                "requested_height": req_h,
+                "requested_fourcc": self._fourcc_to_str(fourcc),
+                "requested_fourcc_value": fourcc,
                 "width": actual_w,
                 "height": actual_h,
                 "fps": actual_fps,
                 "fourcc": fourcc_str,
                 "sample_stats": stats,
+                "looks_black": looks_black,
             }
+        finally:
+            cap.release()
 
-            if sample is None:
-                cap.release()
-                continue
-
-            if fallback is None:
-                fallback = cap
-                fallback_meta = meta
-            else:
-                # Keep only the first viable fallback open.
-                cap.release()
-
-            if not self._frame_looks_black(normalised):
-                if fallback is not None and fallback is not cap:
-                    fallback.release()
-                return cap, meta
-
-        if fallback is not None:
-            self._log(
-                "WARNING: all probed formats produced near-black samples; "
-                f"keeping fallback FOURCC={fallback_meta['fourcc']} for live capture"
-            )
-            return fallback, fallback_meta
-
-        raise RuntimeError(
-            f"cv2.VideoCapture could not produce frames from /dev/video{self._device_idx}"
+    def _open_profile(self, meta):
+        cap = self._configure_capture(
+            meta["requested_width"],
+            meta["requested_height"],
+            meta["requested_fourcc_value"],
         )
+        if cap is None:
+            raise RuntimeError(
+                f"failed to reopen /dev/video{self._device_idx} with "
+                f"{meta['requested_width']}x{meta['requested_height']} "
+                f"{meta['requested_fourcc']}"
+            )
+
+        self._warmup_capture(cap)
+        ok, frame = cap.read()
+        sample = frame if ok and frame is not None else None
+        normalised = self._normalise_frame(sample)
+
+        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+        actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+
+        chosen_meta = dict(meta)
+        chosen_meta.update({
+            "width": actual_w,
+            "height": actual_h,
+            "fps": actual_fps,
+            "fourcc": self._fourcc_to_str(actual_fourcc),
+            "sample_stats": self._frame_stats(normalised),
+            "looks_black": self._frame_looks_black(normalised),
+        })
+        return cap, chosen_meta
+
+    def _configure_capture(self, req_w, req_h, fourcc):
+        cap = cv2.VideoCapture(self._device_idx, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            cap.release()
+            return None
+
+        cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, req_w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, req_h)
+        cap.set(cv2.CAP_PROP_FPS, self._target_fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+        return cap
+
+    def _warmup_capture(self, cap):
+        for _ in range(max(0, self._warmup_frames)):
+            cap.read()
+            if self._warmup_sleep_s > 0:
+                time.sleep(self._warmup_sleep_s)
+
+    def _build_resolution_candidates(self, thermal_cfg):
+        candidates = []
+
+        def add(width, height):
+            try:
+                pair = (int(width), int(height))
+            except (TypeError, ValueError):
+                return
+            if pair[0] <= 0 or pair[1] <= 0:
+                return
+            if pair not in candidates:
+                candidates.append(pair)
+
+        for item in thermal_cfg.get("probe_resolutions", []) or []:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                add(item[0], item[1])
+                continue
+            if isinstance(item, str):
+                match = re.match(r"^\s*(\d+)\s*[xX/]\s*(\d+)\s*$", item)
+                if match:
+                    add(match.group(1), match.group(2))
+
+        add(self._target_w, self._target_h)
+        add(self._target_h, self._target_w)
+        add(240, 320)
+        add(320, 240)
+        return candidates
 
     @staticmethod
     def _normalise_frame(frame):

@@ -14,26 +14,21 @@ camera:
       fps: 15
 
   tb4117:
-    # Confirmed via diagnose.py: HikCamera maps to /dev/video0 on this Pi.
-    # Fix to 0 to skip the slow auto-detect scan of bcm2835-isp nodes.
+    # Xavier 上 video0 仍是有效热视频节点，但 120x160 MJPG 会稳定出黑帧。
+    # 实测 240x320 MJPG 可正常出图，所以 Xavier 单独使用这组参数。
     device_index: 0
     thermal:
-      # UVC descriptor reports 120x160 (width=120, height=160).
-      # This is the actual sensor orientation reported by the firmware.
-      # Raspberry Pi has been stable at this profile.
-      width: 120
-      height: 160
+      width: 240
+      height: 320
       fps: 25
-      # MJPG: lower USB bandwidth, confirmed faster on this hardware
       pixelformat: "MJPG"
-      # TB4117 on Xavier may return black MJPG frames at 120x160 but work at 240x320.
-      # The driver will probe these candidates in order and keep the first non-black profile.
-      probe_resolutions:
-        - "120x160"
-        - "240x320"
-        - "320x240"
       warmup_frames: 5
       warmup_sleep_s: 0.1
+      probe_resolutions:
+        - "240x320"
+        - "320x240"
+        - "120x160"
+        - "160x120"
 
 recording:
   output_dir: "data"
