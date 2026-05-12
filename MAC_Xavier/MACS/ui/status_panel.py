@@ -1,0 +1,264 @@
+"""
+status_panel.py
+---------------
+Bottom status bar displaying live health metrics:
+    FPS per modality | sync drift | IMU | mmWave | disk usage | health | elapsed
+"""
+
+import os
+import time
+import shutil
+
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
+
+
+class StatusPanel(QWidget):
+    """Thin bottom bar for real-time system metrics."""
+
+    _LABEL_STYLE = "font-size: 11px; color: #AAAAAA;"
+
+    def __init__(self, data_path="data", parent=None):
+        super().__init__(parent)
+        self._data_path = data_path
+        self._rec_start = None
+        self._build_ui()
+
+    # ---- UI ----------------------------------------------------------------
+
+    def _build_ui(self):
+        self.setFixedHeight(28)
+        self.setStyleSheet(
+            "background-color: #1E1E1E; border-top: 1px solid #444444;"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 2, 10, 2)
+        layout.setSpacing(24)
+
+        mono = QFont("Monospace", 9)
+
+        self._fps_lbl    = self._make_label(mono, layout)
+        self._sync_lbl   = self._make_label(mono, layout)
+        self._imu_lbl    = self._make_label(mono, layout, stretch=1)
+        self._mmwave_lbl = self._make_label(mono, layout)
+        self._disk_lbl   = self._make_label(mono, layout)
+        self._health_lbl = self._make_label(mono, layout)
+        self._timer_lbl  = self._make_label(mono, layout,
+                                             align=Qt.AlignRight | Qt.AlignVCenter)
+
+        self.reset()
+
+    def _make_label(self, font, layout, stretch=0, align=None):
+        lbl = QLabel()
+        lbl.setFont(font)
+        lbl.setStyleSheet(self._LABEL_STYLE)
+        if align is not None:
+            lbl.setAlignment(align)
+        layout.addWidget(lbl, stretch=stretch)
+        return lbl
+
+    # ---- public setters ----------------------------------------------------
+
+    def set_data_path(self, data_path):
+        if data_path:
+            self._data_path = data_path
+
+    def update_fps(self, rgb=None, depth=None, ir=None, thermal=None):
+        parts = []
+        if rgb is not None:
+            parts.append(f"RGB:{rgb:.1f}")
+        if depth is not None:
+            parts.append(f"D:{depth:.1f}")
+        if ir is not None:
+            parts.append(f"IR:{ir:.1f}")
+        if thermal is not None:
+            parts.append(f"T:{thermal:.1f}")
+        self._fps_lbl.setText("FPS  " + " | ".join(parts) if parts else "FPS  --")
+
+    def update_sync(self, drift_ms=None):
+        if drift_ms is None:
+            self._sync_lbl.setText("Sync --")
+            self._sync_lbl.setStyleSheet(self._LABEL_STYLE)
+            return
+        if drift_ms < 33:
+            color = "#4CAF50"
+        elif drift_ms < 66:
+            color = "#FF9800"
+        else:
+            color = "#F44336"
+        self._sync_lbl.setText(f"Sync {drift_ms:.1f}ms")
+        self._sync_lbl.setStyleSheet(f"font-size: 11px; color: {color};")
+
+    def update_disk(self):
+        path = self._data_path
+        if not os.path.exists(path):
+            path = os.path.expanduser("~")
+        try:
+            usage = shutil.disk_usage(path)
+            free = usage.free / (1024 ** 3)
+            if free > 5:
+                color = "#4CAF50"
+            elif free > 1:
+                color = "#FF9800"
+            else:
+                color = "#F44336"
+            self._disk_lbl.setText(f"Disk {free:.1f}GB")
+            self._disk_lbl.setStyleSheet(f"font-size: 11px; color: {color};")
+        except OSError:
+            self._disk_lbl.setText("Disk N/A")
+
+    def update_health(self, status):
+        """status: one of 'OK', 'WARN', 'ERROR'."""
+        colors = {"OK": "#4CAF50", "WARN": "#FF9800", "ERROR": "#F44336"}
+        c = colors.get(status, "#AAAAAA")
+        self._health_lbl.setText(f"Health {status}")
+        self._health_lbl.setStyleSheet(
+            f"font-size: 11px; color: {c}; font-weight: bold;"
+        )
+
+    def update_imu(self, info=None):
+        info = info or {}
+        if not info.get("enabled"):
+            self._imu_lbl.setText("IMU --")
+            self._imu_lbl.setStyleSheet(self._LABEL_STYLE)
+            self._imu_lbl.setToolTip("")
+            return
+
+        active = list(info.get("active_devices") or [])
+        visible = list(info.get("scan_visible_devices") or [])
+        devices = list(info.get("devices") or [])
+        connected = [item["label"] for item in devices if item.get("connected")]
+        total = int(info.get("devices_total") or len(active) or 0)
+        error = info.get("error")
+
+        color = "#AAAAAA"
+        names = active
+        state = "target"
+        if connected:
+            names = connected
+            state = "online"
+            color = "#4CAF50" if len(connected) == total else "#FF9800"
+        elif visible:
+            names = visible
+            state = "visible"
+            color = "#29B6F6"
+        elif error:
+            color = "#F44336"
+            state = "error"
+
+        summary = self._summarise_names(names)
+        prefix = f"IMU {len(connected)}/{total}" if total else "IMU"
+        text = prefix if not summary else f"{prefix} {state}: {summary}"
+        if error and not connected:
+            text = f"{prefix} error"
+
+        self._imu_lbl.setText(text)
+        self._imu_lbl.setStyleSheet(f"font-size: 11px; color: {color};")
+
+        tooltip_lines = []
+        if active:
+            tooltip_lines.append("Active: " + ", ".join(active))
+        if visible:
+            tooltip_lines.append("Visible: " + ", ".join(visible))
+        if connected:
+            tooltip_lines.append("Connected: " + ", ".join(connected))
+        if error:
+            tooltip_lines.append("Error: " + str(error))
+        self._imu_lbl.setToolTip("\n".join(tooltip_lines))
+
+    def update_mmwave(self, info=None):
+        info = info or {}
+        if not info.get("enabled"):
+            self._mmwave_lbl.setText("mmWave --")
+            self._mmwave_lbl.setStyleSheet(self._LABEL_STYLE)
+            self._mmwave_lbl.setToolTip("")
+            return
+
+        prepared = bool(info.get("prepared"))
+        error = info.get("error")
+        frames = int(info.get("frames_captured") or 0)
+        queue_depth = int(info.get("writer_queue_depth") or 0)
+        queue_size = int(info.get("writer_queue_size") or 0)
+        warnings = list(info.get("warnings") or [])
+
+        color = "#AAAAAA"
+        text = "mmWave idle"
+        if error:
+            color = "#F44336"
+            text = "mmWave error"
+        elif not prepared:
+            color = "#FF9800"
+            text = "mmWave offline"
+        elif queue_size and queue_depth >= max(1, int(queue_size * 0.8)):
+            color = "#FF9800"
+            text = f"mmWave Q {queue_depth}/{queue_size}"
+        elif frames > 0:
+            color = "#4CAF50"
+            text = f"mmWave {frames}f"
+        else:
+            color = "#29B6F6"
+            text = "mmWave ready"
+
+        self._mmwave_lbl.setText(text)
+        self._mmwave_lbl.setStyleSheet(f"font-size: 11px; color: {color};")
+
+        tooltip_lines = [
+            "Prepared: " + ("yes" if prepared else "no"),
+            f"Frames: {frames}",
+        ]
+        if queue_size:
+            tooltip_lines.append(f"Queue: {queue_depth}/{queue_size}")
+        if error:
+            tooltip_lines.append("Error: " + str(error))
+        if warnings:
+            tooltip_lines.extend("Warning: " + item for item in warnings[-3:])
+        self._mmwave_lbl.setToolTip("\n".join(tooltip_lines))
+
+    # ---- recording timer ---------------------------------------------------
+
+    def start_timer(self):
+        self._rec_start = time.monotonic()
+
+    def stop_timer(self):
+        self._rec_start = None
+        self._timer_lbl.setText("")
+        self._timer_lbl.setStyleSheet(self._LABEL_STYLE)
+
+    def refresh_timer(self):
+        if self._rec_start is None:
+            return
+        elapsed = time.monotonic() - self._rec_start
+        m, s = divmod(int(elapsed), 60)
+        self._timer_lbl.setText(f"REC  {m:02d}:{s:02d}")
+        self._timer_lbl.setStyleSheet(
+            "font-size: 11px; color: #F44336; font-weight: bold;"
+        )
+
+    # ---- reset -------------------------------------------------------------
+
+    def reset(self):
+        self._fps_lbl.setText("FPS  --")
+        self._fps_lbl.setStyleSheet(self._LABEL_STYLE)
+        self._sync_lbl.setText("Sync --")
+        self._sync_lbl.setStyleSheet(self._LABEL_STYLE)
+        self._imu_lbl.setText("IMU --")
+        self._imu_lbl.setStyleSheet(self._LABEL_STYLE)
+        self._imu_lbl.setToolTip("")
+        self._mmwave_lbl.setText("mmWave --")
+        self._mmwave_lbl.setStyleSheet(self._LABEL_STYLE)
+        self._mmwave_lbl.setToolTip("")
+        self._disk_lbl.setText("Disk --")
+        self._disk_lbl.setStyleSheet(self._LABEL_STYLE)
+        self._health_lbl.setText("Health --")
+        self._health_lbl.setStyleSheet(self._LABEL_STYLE)
+        self.stop_timer()
+
+    @staticmethod
+    def _summarise_names(names, limit=2):
+        names = [name for name in names if name]
+        if not names:
+            return ""
+        if len(names) <= limit:
+            return ", ".join(names)
+        return ", ".join(names[:limit]) + f" +{len(names) - limit}"

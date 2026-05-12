@@ -1,0 +1,101 @@
+camera:
+  nyx650:
+    rgb:
+      width: 1600
+      height: 1200
+      fps: 15
+    depth:
+      width: 640
+      height: 480
+      fps: 15
+    ir:
+      width: 640
+      height: 480
+      fps: 15
+
+  tb4117:
+    # Confirmed via diagnose.py: HikCamera maps to /dev/video0 on this Pi.
+    # Fix to 0 to skip the slow auto-detect scan of bcm2835-isp nodes.
+    device_index: 0
+    thermal:
+      # UVC descriptor reports 120x160 (width=120, height=160).
+      # This is the actual sensor orientation reported by the firmware.
+      # Raspberry Pi has been stable at this profile.
+      width: 120
+      height: 160
+      fps: 25
+      # MJPG: lower USB bandwidth, confirmed faster on this hardware
+      pixelformat: "MJPG"
+      # TB4117 on Xavier may return black MJPG frames at 120x160 but work at 240x320.
+      # The driver will probe these candidates in order and keep the first non-black profile.
+      probe_resolutions:
+        - "120x160"
+        - "240x320"
+        - "320x240"
+      warmup_frames: 5
+      warmup_sleep_s: 0.1
+
+recording:
+  output_dir: "data"
+  raw_subdir: "raw"
+  processed_subdir: "processed"
+  save_format:
+    RGB: "jpg"
+    Depth: "npy"
+    IR: "npy"
+    Thermal: "jpg"
+  jpg_quality: 95
+
+health:
+  fps_warn_ratio: 0.7
+  frame_loss_threshold: 10
+  sync_drift_threshold_ms: 66
+  disk_min_gb: 1.0
+
+ui:
+  preview_width: 320
+  preview_height: 240
+  status_update_interval_ms: 500
+
+multimodal:
+  mmwave:
+    enabled: true
+    cli_port: "/dev/ttyUSB0"
+    data_port: "/dev/ttyUSB1"
+    cli_baudrate: 115200
+    data_baudrate: 921600
+    read_chunk_size: 4096
+    writer_queue_size: 512
+    command_timeout_s: 3.0
+    post_config_delay_s: 1.0
+    max_packet_size: 65536
+    config_path: "config/profile_human.cfg"
+
+  imu:
+    enabled: true
+    sample_rate_hz: 50
+    connect_timeout_s: 20
+    reconnect_delay_s: 3
+    connect_stagger_s: 2.0
+    scan_warmup_s: 10.0
+    retry_scan_s: 5.0
+    ready_timeout_s: 60
+    notify_uuid: "0000ffe4-0000-1000-8000-00805f9a34fb"
+    write_uuid: "0000ffe9-0000-1000-8000-00805f9a34fb"
+    active_devices: []
+    devices:
+      - label: "imu01_left_wrist"
+        mac: "DC:E1:B0:1F:67:6E"
+        enabled: true
+      - label: "imu02_right_wrist"
+        mac: "E5:9E:9B:1F:CE:48"
+        enabled: true
+      - label: "imu03_waist"
+        mac: "C4:80:F9:46:D1:94"
+        enabled: true
+      - label: "imu04_left_ankle"
+        mac: "D2:5B:8F:2B:49:EE"
+        enabled: true
+      - label: "imu05_right_ankle"
+        mac: "F7:C5:A7:64:8A:09"
+        enabled: true

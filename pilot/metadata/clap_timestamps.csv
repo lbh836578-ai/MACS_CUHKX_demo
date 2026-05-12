@@ -1,0 +1,3 @@
+session_id,csi_device,audio_device,csi_trace_file,audio_trace_file,csi_clap_seconds,audio_clap_seconds,offset_seconds,notes
+demo_dualrx_R2_001,rpi-csi-rx-a,rpi-csi-rx-a,pilot/data/processed/preview/demo_dualrx_R2_001_rx_a_csi_trace.npz,pilot/data/processed/preview/demo_dualrx_R2_001_rx_a_audio_trace.npz,0.0,0.0,0.0,Replace with measured clap alignment for receiver A
+demo_dualrx_R2_001,rpi-csi-rx-b,rpi-csi-rx-b,pilot/data/processed/preview/demo_dualrx_R2_001_rx_b_csi_trace.npz,pilot/data/processed/preview/demo_dualrx_R2_001_rx_b_audio_trace.npz,0.0,0.0,0.0,Replace with measured clap alignment for receiver B

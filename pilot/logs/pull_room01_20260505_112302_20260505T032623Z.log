@@ -1,0 +1,35 @@
+[2026-05-05T03:26:23Z] Logging to /Users/labahua/Desktop/CUHK-Y/pilot/logs/pull_room01_20260505_112302_20260505T032623Z.log
+[2026-05-05T03:26:30Z] Skipping raw data pull from pi@192.168.2.2: ~/pilot/data/raw does not exist
+[2026-05-05T03:26:34Z] Pulling logs from pi@192.168.2.2
+Transfer starting: 2 files
+./
+tx_room01_20260505_112302_20260505T032321Z.log
+
+sent 89 bytes  received 297924 bytes  2980130000 bytes/sec
+total size is 297660  speedup is 1.00
+[2026-05-05T03:26:43Z] Pulling raw data from pi@192.168.2.3
+Transfer starting: 6 files
+./
+audio/
+audio/env/
+audio/env/room01_20260505_112302.wav
+csi/
+csi/room01_20260505_112302.pcap
+
+sent 129 bytes  received 25894600 bytes  258947290000 bytes/sec
+total size is 25887940  speedup is 1.00
+[2026-05-05T03:26:53Z] Pulling logs from pi@192.168.2.3
+Transfer starting: 3 files
+./
+audio_env_room01_20260505_112302_20260505T032313Z.log
+csi_room01_20260505_112302_20260505T032310Z.log
+
+sent 111 bytes  received 3853 bytes  39640000 bytes/sec
+total size is 3519  speedup is 0.89
+[2026-05-05T03:27:01Z] Pulling raw data from pi5@192.168.2.6
+Connection closed by 192.168.2.6 port 22
+rsync(34835): error: unexpected end of file
+rsync(34835): error: io_read_nonblocking
+rsync(34835): error: io_read_buf
+rsync(34835): error: io_read_int
+rsync(34835): warning: child 34836 exited with status 255

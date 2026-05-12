@@ -1,0 +1,2 @@
+session_id,date_utc,location,participants,modality,condition_id,capture_nodes,operator,notes
+demo_single_walk_001,2026-04-30T00:00:00Z,room_a,A,csi,single_walk,rpi-csi-tx|rpi-csi-rx-a,replace-me,Replace this row with real session metadata

@@ -1,0 +1,44 @@
+[2026-05-05T08:29:27Z] Logging to /Users/labahua/Desktop/CUHK-Y/pilot/logs/pull_room01_20260505_162851_20260505T082927Z.log
+[2026-05-05T08:29:27Z] Skipping raw data pull from pi@192.168.2.2: ~/pilot/data/raw does not exist
+[2026-05-05T08:29:27Z] Pulling logs from pi@192.168.2.2
+Transfer starting: 0 files
+
+sent 61 bytes  received 92 bytes  1530000 bytes/sec
+total size is 0  speedup is 0.00
+[2026-05-05T08:29:28Z] Pulling raw data from pi@192.168.2.3
+Transfer starting: 6 files
+./
+audio/
+audio/env/
+audio/env/room01_20260505_162851.wav
+csi/
+csi/room01_20260505_162851.pcap
+
+sent 129 bytes  received 4166272 bytes  41664010000 bytes/sec
+total size is 4164920  speedup is 1.00
+[2026-05-05T08:29:28Z] Pulling logs from pi@192.168.2.3
+Transfer starting: 3 files
+./
+audio_env_room01_20260505_162851_20260505T082852Z.log
+csi_room01_20260505_162851_20260505T082852Z.log
+
+sent 111 bytes  received 3512 bytes  36230000 bytes/sec
+total size is 3206  speedup is 0.88
+[2026-05-05T08:29:29Z] Pulling raw data from pi5@192.168.2.6
+Transfer starting: 5 files
+./
+audio/
+audio/lav/
+audio/lav/room01_20260505_162851_lavA.wav
+audio/lav/room01_20260505_162851_lavB.wav
+
+sent 123 bytes  received 4117351 bytes  41174740000 bytes/sec
+total size is 4116088  speedup is 1.00
+[2026-05-05T08:29:30Z] Pulling logs from pi5@192.168.2.6
+Transfer starting: 2 files
+./
+audio_lav_room01_20260505_162851_20260505T082852Z.log
+
+sent 89 bytes  received 1743 bytes  18320000 bytes/sec
+total size is 1534  speedup is 0.84
+[2026-05-05T08:29:30Z] Wrote manifest to /Users/labahua/Desktop/CUHK-Y/pilot/data/pulls/room01_20260505_162851/manifest.sha256
