@@ -1,0 +1,77 @@
+controller:
+  host_alias: cuhky-host
+  mgmt_ip: 10.0.50.10
+  notes: Mac or Linux control host on the wired management subnet for SSH, rsync, and offline analysis.
+
+devices:
+  - id: tx-a
+    role: csi_tx_tdma
+    slot_index: 0
+    ssh_host: pi@10.0.50.11
+    mgmt_ip: 10.0.50.11
+    ethernet_interface: eth0
+    wifi_interface: wlan0
+    wifi_mac: fill-me
+    nexmon_installed: true
+    notes: South-west transmitter. Keep wlan0 associated to the dedicated 5 GHz AP in managed mode.
+
+  - id: tx-b
+    role: csi_tx_tdma
+    slot_index: 1
+    ssh_host: pi@10.0.50.12
+    mgmt_ip: 10.0.50.12
+    ethernet_interface: eth0
+    wifi_interface: wlan0
+    wifi_mac: fill-me
+    nexmon_installed: true
+    notes: South-east transmitter. Uses the second TDMA slot.
+
+  - id: tx-c
+    role: csi_tx_tdma
+    slot_index: 2
+    ssh_host: pi@10.0.50.13
+    mgmt_ip: 10.0.50.13
+    ethernet_interface: eth0
+    wifi_interface: wlan0
+    wifi_mac: fill-me
+    nexmon_installed: true
+    notes: North-center transmitter. Uses the third TDMA slot.
+
+  - id: rx-a
+    role: csi_rx_listener
+    ssh_host: pi@10.0.50.21
+    mgmt_ip: 10.0.50.21
+    ethernet_interface: eth0
+    wifi_interface: wlan0
+    capture_src_macs:
+      - fill-me-tx-a
+      - fill-me-tx-b
+      - fill-me-tx-c
+    nexmon_installed: true
+    notes: North-west receiver. Locks to the sensing channel and listens continuously.
+
+  - id: rx-b
+    role: csi_rx_listener
+    ssh_host: pi@10.0.50.22
+    mgmt_ip: 10.0.50.22
+    ethernet_interface: eth0
+    wifi_interface: wlan0
+    capture_src_macs:
+      - fill-me-tx-a
+      - fill-me-tx-b
+      - fill-me-tx-c
+    nexmon_installed: true
+    notes: North-east receiver. Locks to the sensing channel and listens continuously.
+
+  - id: rx-c
+    role: csi_rx_listener
+    ssh_host: pi@10.0.50.23
+    mgmt_ip: 10.0.50.23
+    ethernet_interface: eth0
+    wifi_interface: wlan0
+    capture_src_macs:
+      - fill-me-tx-a
+      - fill-me-tx-b
+      - fill-me-tx-c
+    nexmon_installed: true
+    notes: South-center receiver. Locks to the sensing channel and listens continuously.

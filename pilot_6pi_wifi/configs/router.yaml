@@ -1,0 +1,43 @@
+ap:
+  enabled: true
+  ssid: CUHKY-CSI-5G
+  password: change-me-before-deploy
+  band: 5ghz
+  channel: 36
+  bandwidth_mhz: 40
+  security: wpa2-psk
+  auto_channel: false
+  band_steering: false
+  airtime_fairness: false
+  notes: Dedicated sensing SSID. Use 20 MHz for first bring-up, then 40 MHz for the default 6Pi baseline. Only move to 80 MHz after validating that all nine Tx-Rx links remain stable.
+
+profiles:
+  bringup:
+    channel: 36
+    bandwidth_mhz: 20
+    slot_ms: 300
+    burst_count: 60
+    burst_interval: 0.005
+    expected_total_pps_per_rx_min: 90
+    expected_total_pps_per_rx_target: 150
+    notes: Most stable profile for first successful 3Tx/3Rx bring-up.
+
+  baseline:
+    channel: 36
+    bandwidth_mhz: 40
+    slot_ms: 300
+    burst_count: 120
+    burst_interval: 0.002
+    expected_total_pps_per_rx_min: 180
+    expected_total_pps_per_rx_target: 300
+    notes: Recommended formal baseline for HAR and coarse HAU experiments.
+
+  high_resolution:
+    channel: 36
+    bandwidth_mhz: 80
+    slot_ms: 300
+    burst_count: 150
+    burst_interval: 0.002
+    expected_total_pps_per_rx_min: 200
+    expected_total_pps_per_rx_target: 360
+    notes: Use only after confirming the 40 MHz profile is stable. Higher subcarrier count comes with lower SNR margin.

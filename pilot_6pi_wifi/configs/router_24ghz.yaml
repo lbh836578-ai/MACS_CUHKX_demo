@@ -1,0 +1,44 @@
+ap:
+  enabled: true
+  ssid: CUHKY-CSI-24G
+  password: change-me-before-deploy
+  band: 2.4ghz
+  channel: 11
+  bandwidth_mhz: 20
+  security: wpa2-psk
+  auto_channel: false
+  band_steering: false
+  airtime_fairness: false
+  coexistence_20_40: false
+  notes: Dedicated 2.4 GHz sensing SSID. Use channel 1, 6, or 11 only. Default to 11/20 unless a scan shows channel 1 or 6 is cleaner.
+
+profiles:
+  bringup:
+    channel: 11
+    bandwidth_mhz: 20
+    slot_ms: 300
+    burst_count: 60
+    burst_interval: 0.005
+    expected_total_pps_per_rx_min: 90
+    expected_total_pps_per_rx_target: 150
+    notes: Most stable profile for first successful 3Tx/3Rx bring-up on 2.4 GHz.
+
+  baseline:
+    channel: 11
+    bandwidth_mhz: 20
+    slot_ms: 300
+    burst_count: 90
+    burst_interval: 0.003
+    expected_total_pps_per_rx_min: 120
+    expected_total_pps_per_rx_target: 220
+    notes: Recommended formal baseline for 2.4 GHz HAR and coarse HAU experiments.
+
+  congested_env:
+    channel: 1
+    bandwidth_mhz: 20
+    slot_ms: 350
+    burst_count: 70
+    burst_interval: 0.004
+    expected_total_pps_per_rx_min: 100
+    expected_total_pps_per_rx_target: 180
+    notes: Conservative fallback profile when 2.4 GHz interference is heavy. Also try channel 6 or 11 with the same timing if channel 1 is busy.
